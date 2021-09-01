@@ -2,7 +2,7 @@
 
 I thought to myself during this pandemic, I bet I could make zoom, currently have 640x480 webcam video streaming TCP point
 to point using old style video for windows capture, will add opus codec for voice, maybe throw huffman compression on the
-currently uncompressed bitmap stream to save bandwidth. 640*480*4 / 1024 = 1200kb per frame,
+currently uncompressed bitmap stream to save bandwidth. 640x480x4 / 1024 = 1200kb per frame,
 figure that would saturate bandwidth pretty quick. But I'm sure some cams can spit out h.264 or at least jpegs for MJPEG, but will
 first check out low effort compression for "good enough" operation.
 
