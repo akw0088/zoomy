@@ -129,7 +129,7 @@ int Voice::voice_send(Audio &audio, int sock)
 	static bool looped = false;
 	unsigned int uiBuffer;
 	int buffersProcessed = 0;
-	bool local_echo = true;
+	bool local_echo = false;
 	static voicemsg_t msg;
 
 	if (audio.microphone == NULL)
@@ -210,7 +210,10 @@ int Voice::voice_send(Audio &audio, int sock)
 		int ret = errno;
 #endif
 
-		printf("Failed to send voice data %d\n", ret);
+		if (ret != WSAEWOULDBLOCK)
+		{
+			printf("Failed to send voice data %d\n", ret);
+		}
 	}
 
 
@@ -239,7 +242,7 @@ int Voice::voice_recv(Audio &audio, int sock)
 	unsigned int size;
 	int ret;
 	static int pong = 0;
-	static bool looped = false;
+	static bool looped = true;
 	int buffersProcessed = 0;
 	unsigned int uiBuffer;
 	bool remote_echo = true;

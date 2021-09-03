@@ -365,48 +365,111 @@ int set_sock_options(SOCKET sock)
 }
 
 
-int connect_sock(char *ip_addr, unsigned short port, SOCKET &sock)
+int connect_sock(char *ip_addr, unsigned short port, SOCKET &osock)
 {
 	struct sockaddr_in	servaddr;
 	int ret;
+	static int sock = -1;
 
-	sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-
-	memset(&servaddr, 0, sizeof(struct sockaddr_in));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = inet_addr(ip_addr);
-	servaddr.sin_port = htons(port);
-
-	// 3 way handshake
-	printf("Attempting to connect to %s:%d\n", ip_addr, port);
-	ret = connect(sock, (struct sockaddr *)&servaddr, sizeof(struct sockaddr_in));
-
-	if (ret == SOCKET_ERROR)
+	if (sock == -1)
 	{
-		ret = WSAGetLastError();
+		sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		set_sock_options(sock);
 
-		switch (ret)
+		memset(&servaddr, 0, sizeof(struct sockaddr_in));
+		servaddr.sin_family = AF_INET;
+		servaddr.sin_addr.s_addr = inet_addr(ip_addr);
+		servaddr.sin_port = htons(port);
+
+		// 3 way handshake
+		printf("Attempting to connect to %s:%d\n", ip_addr, port);
+		ret = connect(sock, (struct sockaddr *)&servaddr, sizeof(struct sockaddr_in));
+
+		if (ret == SOCKET_ERROR)
 		{
-		case WSAETIMEDOUT:
-			printf("Fatal Error: Connecting to %s timed out.\n", ip_addr);
-			break;
-		case WSAECONNREFUSED:
-			printf("Fatal Error: %s refused connection.\n(Server program is not running)\n", ip_addr);
-			break;
-		case WSAEHOSTUNREACH:
-			printf("Fatal Error: router sent ICMP packet (destination unreachable)\n");
-			break;
-		default:
-			printf("Fatal Error: %d\n", ret);
-			break;
+			ret = WSAGetLastError();
+
+			switch (ret)
+			{
+			case WSAETIMEDOUT:
+				printf("Fatal Error: Connecting to %s timed out.\n", ip_addr);
+				break;
+			case WSAECONNREFUSED:
+				printf("Fatal Error: %s refused connection.\n(Server program is not running)\n", ip_addr);
+				break;
+			case WSAEHOSTUNREACH:
+				printf("Fatal Error: router sent ICMP packet (destination unreachable)\n");
+				break;
+			case WSAEWOULDBLOCK:
+				printf("Would block, using select()\r\n");
+				return 0;
+			default:
+				printf("Fatal Error: %d\n", ret);
+				break;
+			}
+
+			return -1;
 		}
 
-		return -1;
-	}
-	printf("TCP handshake completed with %s\n", ip_addr);
-	set_sock_options(sock);
+		osock = sock;
+		sock = -1;
+		printf("TCP handshake completed with %s\n", ip_addr);
 
+		return 0;
+	}
+	else
+	{
+
+		struct timeval timeout;
+		fd_set read_set;
+		fd_set write_set;
+
+		FD_ZERO(&read_set);
+		FD_ZERO(&write_set);
+		FD_SET(sock, &read_set);
+		FD_SET(sock, &write_set);
+
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 200000;
+
+		int ret = select(sock + 1, &read_set, &write_set, NULL, &timeout);
+		if (ret < 0)
+		{
+			printf("select() failed ");
+			return 0;
+		}
+		else if (ret == 0)
+		{
+			static int count = 0;
+			printf("timed out\r\n");
+			count++;
+
+			if (count == 5)
+			{
+				sock = -1;
+			}
+			return 0;
+		}
+
+		if (FD_ISSET(sock, &read_set) || FD_ISSET(sock, &write_set))
+		{
+			unsigned int err = -1;
+			int len = 4;
+			int ret = getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+			if (ret != 0)
+			{
+				printf("getsockopt failed\r\n");
+			}
+
+			if (err == 0)
+			{
+				osock = sock;
+				sock = -1;
+				printf("TCP handshake completed with %s\n", ip_addr);
+			}
+		}
+	}
+	
 	return 0;
 }
 
@@ -533,7 +596,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		cxClient = rect.right;
 		cyClient = rect.bottom;
 
-		SetTimer(hwnd, 0, 5000, NULL);
+		SetTimer(hwnd, 0, 500, NULL);
 
 		char path[MAX_PATH] = { 0 };
 		GetCurrentDirectory(MAX_PATH, path);
