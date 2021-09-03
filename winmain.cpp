@@ -8,6 +8,12 @@
 #include <fcntl.h> 
 #include <io.h>
 
+#include "voice.h"
+#include "audio.h"
+
+#define WMU_CAPTURE WM_USER + 1
+
+
 typedef int socklen_t;
 
 unsigned int cxClient, cyClient;
@@ -257,12 +263,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	ShowWindow(hwnd, SW_SHOW);
 	UpdateWindow(hwnd);
 
-	while (GetMessage(&msg, 0, 0, 0))
+	while (TRUE)
 	{
-		if (!IsDialogMessage(hwnd, &msg))
+		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))
 		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
+			if (GetMessage(&msg, NULL, 0, 0) > 0)
+			{
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+			else
+			{
+				break;
+			}
+		}
+		else
+		{
+			SendMessage(hwnd, WMU_CAPTURE, 0, 0);
 		}
 	}
 	return msg.wParam;
@@ -499,11 +516,16 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static int connect_port = 65534;
 	static char connect_ip[80] = "127.0.0.1";
 	static int capture = 1;
+	static Audio audio;
+	static Voice voice;
 
 	switch (message)                  /* handle the messages */
 	{
 	case WM_CREATE:
 	{
+		audio.init();
+		voice.init(audio);
+		audio.capture_start();
 		WSAStartup(MAKEWORD(2, 0), &WSAData);
 		RedirectIOToConsole(true);
 		GetClientRect(hwnd, &rect);
@@ -511,7 +533,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		cxClient = rect.right;
 		cyClient = rect.bottom;
 
-		SetTimer(hwnd, 0, 16, NULL);
+		SetTimer(hwnd, 0, 5000, NULL);
 
 		char path[MAX_PATH] = { 0 };
 		GetCurrentDirectory(MAX_PATH, path);
@@ -551,21 +573,22 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		break;
 	}
-	case WM_TIMER:
+	case WMU_CAPTURE:
 	{
 		int rsize = 0;
 
-
-		// Dont attempt anything until video is streaming
 		if (init == false)
 			return 0;
 
-
-		if (sock == -1)
+		if (csock != -1)
 		{
-			connect_sock(connect_ip, connect_port, sock);
+			voice.voice_send(audio, csock);
 		}
 
+		if (sock != -1 && capture == 1)
+		{
+			voice.voice_recv(audio, sock);
+		}
 
 
 		if (csock == -1)
@@ -633,6 +656,19 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			int ret = send(sock, (char *)data, 640 * 480 * 4, 0);
 		}
 
+		break;
+	}
+	case WM_TIMER:
+	{
+		// Dont attempt anything until video is streaming
+		if (init == false)
+			return 0;
+
+
+		if (sock == -1)
+		{
+			connect_sock(connect_ip, connect_port, sock);
+		}
 
 
 		break;
