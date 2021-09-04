@@ -103,8 +103,8 @@ unsigned char red_check[FRAME_SIZE];
 unsigned char grey_check[FRAME_SIZE];
 
 
-unsigned char rbuffer[FRAME_SIZE];
-unsigned char sbuffer[FRAME_SIZE];
+unsigned char rbuffer[FRAME_SIZE * 10];
+unsigned char sbuffer[FRAME_SIZE * 10];
 
 unsigned char recv_image[FRAME_SIZE];
 unsigned char cap_image[FRAME_SIZE];
@@ -296,6 +296,11 @@ int set_sock_options(SOCKET sock)
 	printf("Setting SO_RCVBUF to %d\n", rcvbuf);
 	getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, &arglen);
 	printf("SO_RCVBUF = %d\n", rcvbuf);
+
+
+
+	int flag = 1;
+	int result = setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
 
 	return 0;
 }
@@ -678,14 +683,14 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			printf("Showing frame %d\r\n", i++);
 		}
 
-		if (squeue.size >= FRAME_SIZE)
+		if (squeue.size >= FRAME_SIZE / 2)
 		{
-			dequeue(&squeue, sbuffer,FRAME_SIZE);
-			int ret = send(sock, (char *)sbuffer, FRAME_SIZE, 0);
-			if (ret > 0 && ret < FRAME_SIZE)
+			dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
+			int ret = send(sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
+			if (ret > 0 && ret < FRAME_SIZE / 2)
 			{
 				// partial send occurred (full buffer?)
-				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE - ret);
+				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
 			}
 
 
@@ -802,12 +807,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (capture)
 		{
 			// setup frame rate
-			CAPTUREPARMS CaptureParms;
-			float FramesPerSec = 30.0; // 30 frames per second
+//			CAPTUREPARMS CaptureParms;
+//			float FramesPerSec = 30.0; // 30 frames per second
 
-			capCaptureGetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
-			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
-			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+//			capCaptureGetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+//			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
+//			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
 
 			// setup resolution
 			BITMAPINFO psVideoFormat;
@@ -816,6 +821,14 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			psVideoFormat.bmiHeader.biWidth = 640;
 			psVideoFormat.bmiHeader.biHeight = 480;
 			capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+
+
+			CAPDRIVERCAPS CapDrvCaps;
+
+			capDriverGetCaps(camhwnd, &CapDrvCaps, sizeof(CAPDRIVERCAPS));
+
+			if (CapDrvCaps.fHasOverlay)
+				capOverlay(camhwnd, TRUE); //for speedup
 
 			SetWindowPos(camhwnd, 0, 0, 0, WIDTH, HEIGHT, 0);
 			capSetCallbackOnFrame(camhwnd, frameCallback);
