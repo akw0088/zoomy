@@ -13,8 +13,11 @@
 #include "queue.h"
 
 #define WMU_CAPTURE WM_USER + 1
-#define WIDTH 640
-#define HEIGHT 480
+#define WIDTH 320
+#define HEIGHT 240
+
+#define DISPLAY_WIDTH 640
+#define DISPLAY_HEIGHT 480
 
 typedef enum
 {
@@ -469,7 +472,7 @@ void handle_accepted(SOCKET &csock, char *buffer, int &size)
 
 }
 
-void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height, unsigned char *data)
+void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data)
 {
 	HBITMAP hBitmap, hOldBitmap;
 
@@ -479,7 +482,7 @@ void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height,
 	hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
 	// This scaling is a little strange because Stretch maintains aspect ratios
-	StretchBlt(hdc, xoff, yoff, width, height, hdcMem, 0, 0, width, height, SRCCOPY);
+	StretchBlt(hdc, xoff, yoff, scalew, scaleh, hdcMem, 0, 0, width, height, SRCCOPY);
 	SelectObject(hdcMem, hOldBitmap);
 	DeleteDC(hdcMem);
 	DeleteObject(hBitmap);
@@ -819,8 +822,8 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			BITMAPINFO psVideoFormat;
 
 			capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
-			psVideoFormat.bmiHeader.biWidth = 640;
-			psVideoFormat.bmiHeader.biHeight = 480;
+			psVideoFormat.bmiHeader.biWidth = WIDTH;
+			psVideoFormat.bmiHeader.biHeight = HEIGHT;
 			capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
 
 
@@ -831,14 +834,14 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (CapDrvCaps.fHasOverlay)
 				capOverlay(camhwnd, TRUE); //for speedup
 
-			SetWindowPos(camhwnd, 0, 0, 0, WIDTH, HEIGHT, 0);
+			SetWindowPos(camhwnd, 0, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0);
 			capSetCallbackOnFrame(camhwnd, frameCallback);
 			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 
 			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
 			capDlgVideoCompression(camhwnd);
 
-			SendMessage(camhwnd, WM_CAP_SET_SCALE, false, 0);
+			SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
 			SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 16, 0);
 			SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
 		}
@@ -850,12 +853,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_PAINT:
 		hdc = BeginPaint(hwnd, &ps);
 
-		draw_pixels(hdc, hdcMem, WIDTH, 0, WIDTH, HEIGHT, recv_image);
+		draw_pixels(hdc, hdcMem, DISPLAY_WIDTH, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, recv_image);
 
 		if (capture == 0)
 		{
 			// capture will draw himself, so no need to do anything
-			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, 480, cap_image);
+			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, cap_image);
 		}
 
 		EndPaint(hwnd, &ps);
