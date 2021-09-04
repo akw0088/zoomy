@@ -10,10 +10,20 @@
 
 #include "voice.h"
 #include "audio.h"
+#include "queue.h"
 
 #define WMU_CAPTURE WM_USER + 1
 
 
+typedef enum
+{
+	CONNECTED,
+	DISCONNECTED
+} client_state_t;
+
+
+client_state_t connect_state;
+client_state_t listen_state;
 typedef int socklen_t;
 
 unsigned int cxClient, cyClient;
@@ -83,99 +93,24 @@ typedef struct
 #pragma pack(pop)
 
 
-unsigned char data[640 * 480 * 4];
-unsigned char rbuffer[640 * 480 * 4];
-unsigned char pixel[640 * 480 * 4];
 
-#define SIZE_QUEUE 640*480*4*10 // 10 frames
-
-typedef struct
-{
-	int size;
-	int tail;
-	int head;
-	char buffer[SIZE_QUEUE];
-} queue_t;
-
-
-
+queue_t squeue;
 queue_t rqueue;
 
-
-int enqueue(queue_t *queue, unsigned char *buffer, int size)
-{
-	int        i;
-
-	if (queue->size == SIZE_QUEUE)
-	{
-		return 0;
-	}
-
-	for (i = 0; i < size && queue->size != SIZE_QUEUE; i++)
-	{
-		queue->buffer[queue->tail++] = buffer[i];
-		queue->size++;
-		if (queue->tail == SIZE_QUEUE)
-			queue->tail = 0;
-	}
-	return i;
-}
-
-int enqueue_front(queue_t *queue, unsigned char *buffer, int size)
-{
-	int        i;
-
-	if (queue->size == SIZE_QUEUE)
-		return 0;
-
-	for (i = 0; i < size && queue->size != SIZE_QUEUE; i++)
-	{
-		if (queue->head == 0)
-		{
-			queue->head = SIZE_QUEUE;
-		}
-		queue->buffer[--queue->head] = buffer[(size - 1) - i];
-		queue->size++;
-	}
-	return i;
-}
+unsigned char blue_check[FRAME_SIZE];
+unsigned char red_check[FRAME_SIZE];
+unsigned char grey_check[FRAME_SIZE];
 
 
-int dequeue(queue_t *queue, unsigned char *buffer, int size)
-{
-	int        i;
+unsigned char rbuffer[FRAME_SIZE];
+unsigned char sbuffer[FRAME_SIZE];
 
-	for (i = 0; i < size && queue->size != 0; i++)
-	{
-		buffer[i] = queue->buffer[queue->head++];
-		//queue->buffer[queue->head - 1] = ' '; // empty space for debugging
-		queue->size--;
-		if (queue->head == SIZE_QUEUE)
-		{
-			queue->head = 0;
-		}
-	}
-	return i;
-}
+unsigned char recv_image[FRAME_SIZE];
+unsigned char cap_image[FRAME_SIZE];
+unsigned char cap_image_last[FRAME_SIZE];
 
-int dequeue_peek(queue_t *queue, unsigned char *buffer, int size)
-{
-	int        i;
-	int		head = queue->head;
-	int		qsize = queue->size;
 
-	for (i = 0; i < size && qsize != 0; i++)
-	{
-		buffer[i] = queue->buffer[head++];
-		//queue->buffer[queue->head - 1] = ' '; // empty space for debugging
-		qsize--;
-		if (head == SIZE_QUEUE)
-		{
-			head = 0;
-		}
-	}
-	return i;
-}
+
 
 
 void RedirectIOToConsole(int debug)
@@ -499,7 +434,7 @@ void handle_accepted(SOCKET &csock, char *buffer, int &size)
 	if (csock == -1)
 		return;
 
-	size = recv(csock, buffer, 640 * 480 * 4, 0);
+	size = recv(csock, buffer, FRAME_SIZE, 0);
 	if (size == -1)
 	{
 		int ret = WSAGetLastError();
@@ -522,27 +457,13 @@ void handle_accepted(SOCKET &csock, char *buffer, int &size)
 			printf("Fatal Error: %d\n", ret);
 			break;
 		}
+
+		csock = -1;
 	}
 
 }
 
-void draw_pixels(HDC hdc, HDC hdcMem, int width, int height)
-{
-	HBITMAP hBitmap, hOldBitmap;
-
-	hBitmap = CreateCompatibleBitmap(hdc, width, height);
-	SetBitmapBits(hBitmap, sizeof(int) * width * height, pixel);
-	hdcMem = CreateCompatibleDC(hdc);
-	hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
-
-	// This scaling is a little strange because Stretch maintains aspect ratios
-	StretchBlt(hdc, 640, 0, width, height, hdcMem, 0, 0, width, height, SRCCOPY);
-	SelectObject(hdcMem, hOldBitmap);
-	DeleteDC(hdcMem);
-	DeleteObject(hBitmap);
-}
-
-void draw_pixels2(HDC hdc, HDC hdcMem, int width, int height)
+void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height, unsigned char *data)
 {
 	HBITMAP hBitmap, hOldBitmap;
 
@@ -552,7 +473,7 @@ void draw_pixels2(HDC hdc, HDC hdcMem, int width, int height)
 	hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
 	// This scaling is a little strange because Stretch maintains aspect ratios
-	StretchBlt(hdc, 0, 0, width, height, hdcMem, 0, 0, width, height, SRCCOPY);
+	StretchBlt(hdc, xoff, yoff, width, height, hdcMem, 0, 0, width, height, SRCCOPY);
 	SelectObject(hdcMem, hOldBitmap);
 	DeleteDC(hdcMem);
 	DeleteObject(hBitmap);
@@ -608,6 +529,41 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		capture = GetPrivateProfileInt(TEXT("zoomy"), TEXT("capture"), 1, path);
 
 
+		// Create a checkerboard pattern
+		unsigned int *ipixel = (unsigned int *)blue_check;
+		for (int i = 0; i < 640; i++)
+		{
+			for (int j = 0; j < 480; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * 640 + 0] = c;
+			}
+		}
+
+
+		ipixel = (unsigned int *)red_check;
+		for (int i = 0; i < 640; i++)
+		{
+			for (int j = 0; j < 480; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * 640 + 0] = RGB(0, 0, c); // RGB is backwards so red is blue etc
+			}
+		}
+
+		ipixel = (unsigned int *)grey_check;
+		for (int i = 0; i < 640; i++)
+		{
+			for (int j = 0; j < 480; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * 640 + 0] = RGB(c / 4, c / 4, c / 4);
+			}
+		}
+
+		memcpy(cap_image, grey_check, FRAME_SIZE);
+		memcpy(recv_image, grey_check, FRAME_SIZE);
+
 		if (capture)
 		{
 			printf("Starting Camera\r\n");
@@ -616,18 +572,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		else
 		{
 			printf("*** Camera not enabled ***\r\n");
-
-
-			// Create a checkerboard pattern
-			unsigned int *ipixel = (unsigned int *)data;
-			for (int i = 0; i < 640; i++)
-			{
-				for (int j = 0; j < 480; j++)
-				{
-					unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-					ipixel[i + j * 640 + 0] = c;
-				}
-			}
+			memcpy(cap_image, blue_check, FRAME_SIZE);
 		}
 
 
@@ -643,12 +588,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-		if (csock != -1)
-		{
-			voice.voice_send(audio, csock);
-		}
-
-		if (sock != -1 && capture == 1)
+		if (sock != -1)
 		{
 			voice.voice_recv(audio, sock);
 		}
@@ -660,12 +600,52 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			handle_accepted(csock, (char *)rbuffer, rsize);
 
 		if (rsize == -1)
+		{
 			csock = -1;
-
-		if (rsize > 0)
+			memset(&rqueue, 0, sizeof(queue_t));
+		}
+		else if (rsize > 0)
 		{
 			// add data to circular queue
 			enqueue(&rqueue, rbuffer, rsize);
+		}
+
+		if (rqueue.size >= FRAME_SIZE)
+		{
+			dequeue(&rqueue, rbuffer,FRAME_SIZE);
+			memcpy(recv_image, rbuffer,FRAME_SIZE);
+			InvalidateRect(hwnd, &rect, FALSE);
+			static int i = 0;
+			printf("Showing frame %d\r\n", i++);
+		}
+
+		if (squeue.size >= FRAME_SIZE)
+		{
+			dequeue(&squeue, sbuffer,FRAME_SIZE);
+			int ret = send(sock, (char *)sbuffer, FRAME_SIZE, 0);
+			if (ret > 0 && ret < FRAME_SIZE)
+			{
+				// partial send occurred (full buffer?)
+				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE - ret);
+			}
+
+
+			if (ret == -1)
+			{
+				int err = WSAGetLastError();
+
+				if (err != WSAEWOULDBLOCK)
+				{
+					printf("send returned -1 error %d\r\n", err);
+					sock = -1;
+				}
+			}
+		}
+
+
+		if (csock != -1)
+		{
+			voice.voice_send(audio, csock);
 		}
 
 		if (sock != -1 && capture)
@@ -679,21 +659,20 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SelectObject(hTargetDC, hBitmap);
 			PrintWindow(camhwnd, hTargetDC, PW_CLIENTONLY);
 
-			GetBitmapBits(hBitmap, 640 * 480 * 4, &data);
+			GetBitmapBits(hBitmap, FRAME_SIZE, &cap_image);
 
-			static int i = 0;
-			printf("Sending Frame %d\r\n", i++);
-			int ret = send(sock, (char *)data, 640 * 480 * 4, 0);
-
-			if (ret == -1)
+			// prevent duplicate frames
+			if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
 			{
-				int err = WSAGetLastError();
+				static int i = 0;
+				printf("Sending Frame %d\r\n", i++);
 
-				if (err != WSAEWOULDBLOCK)
-				{
-					printf("connect_sock return -1 error %d\r\n", err);
-					sock = -1;
-				}
+				enqueue(&squeue, cap_image, FRAME_SIZE);
+				memcpy(cap_image_last, cap_image, FRAME_SIZE);
+			}
+			else
+			{
+				printf("Duplicate frame\r\n");
 			}
 
 			DeleteObject(hBitmap);
@@ -701,22 +680,16 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DeleteDC(hTargetDC);
 		}
 
-		if (rqueue.size >= 640 * 480 * 4)
-		{
-			//			char filename[80];
-			dequeue(&rqueue, rbuffer, 640 * 480 * 4);
-
-			memcpy(pixel, rbuffer, 640 * 480 * 4);
-			InvalidateRect(hwnd, &rect, FALSE);
-			static int i = 0;
-			//			sprintf(filename, "frame%04d.bmp", i++);
-			//			write_bitmap(filename, 640, 480, (int *)rbuffer);
-			printf("Writing frame %d\r\n", i++);
-		}
-
 		if (sock != -1 && capture == 0)
 		{
-			int ret = send(sock, (char *)data, 640 * 480 * 4, 0);
+			static int i = 0;
+			// send checkerbox
+
+			if (i % 500 == 0)
+			{
+				printf("Sending checkbox %d\r\n", i++);
+				enqueue(&squeue, cap_image, FRAME_SIZE);
+			}
 		}
 
 		break;
@@ -727,12 +700,27 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-
 		if (sock == -1)
 		{
+			connect_state = DISCONNECTED;
+			memcpy(recv_image, red_check, FRAME_SIZE);
+			InvalidateRect(hwnd, &rect, FALSE);
 			connect_sock(connect_ip, connect_port, sock);
 		}
+		else
+		{
+			connect_state = CONNECTED;
+		}
 
+		if (csock == -1)
+		{
+			enqueue(&rqueue, red_check, FRAME_SIZE);
+			listen_state = DISCONNECTED;
+		}
+		else
+		{
+			listen_state = CONNECTED;
+		}
 
 		break;
 	}
@@ -749,7 +737,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (capture)
 		{
-			SetWindowPos(camhwnd, 0, 0, 0, width, height, 0);
+			SetWindowPos(camhwnd, 0, 0, 0, 640, 480, 0);
 			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
 
@@ -765,11 +753,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_PAINT:
 		hdc = BeginPaint(hwnd, &ps);
 
-		draw_pixels(hdc, hdcMem, 640, 480);
+		draw_pixels(hdc, hdcMem, 640, 0, 640, 480, recv_image);
 
 		if (capture == 0)
 		{
-			draw_pixels2(hdc, hdcMem, 640, 480);
+			// capture will draw himself, so no need to do anything
+			draw_pixels(hdc, hdcMem, 0, 0, 640, 480, cap_image);
 		}
 
 		EndPaint(hwnd, &ps);

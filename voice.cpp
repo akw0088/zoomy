@@ -1,8 +1,13 @@
 
 #include "voice.h"
 #include <winsock.h> 
+#include "queue.h"
 
+queue_t snd_squeue;
+queue_t snd_rqueue;
 
+unsigned char snd_rbuffer[SEGMENT_SIZE * 5];
+unsigned char snd_sbuffer[SEGMENT_SIZE * 5];
 
 Voice::Voice()
 {
@@ -137,6 +142,17 @@ int Voice::voice_send(Audio &audio, int sock)
 		return 0;
 	}
 
+	if (snd_squeue.size > SEGMENT_SIZE)
+	{
+		int size = dequeue(&snd_squeue, &snd_sbuffer[0], SEGMENT_SIZE);
+
+		int sent = send(sock, (char *)&snd_sbuffer[0], size, 0);
+		if (sent < SEGMENT_SIZE)
+		{
+			enqueue_front(&snd_squeue, &snd_sbuffer[sent], SEGMENT_SIZE - sent);
+		}
+	}
+
 	if (looped)
 	{
 		if (local_echo)
@@ -201,21 +217,8 @@ int Voice::voice_send(Audio &audio, int sock)
 
 	msg.sequence = voice_send_sequence++;
 	msg.qport = qport;
-	int ret = send(sock, (char *)&msg, VOICE_HEADER + num_bytes, 0);
-	if (ret < 0)
-	{
-#ifdef WIN32
-		int ret = WSAGetLastError();
-#else
-		int ret = errno;
-#endif
 
-		if (ret != WSAEWOULDBLOCK)
-		{
-			printf("Failed to send voice data %d\n", ret);
-		}
-	}
-
+	enqueue(&snd_squeue, (unsigned char *)&msg, VOICE_HEADER + num_bytes);
 
 	pong++;
 	if (pong >= NUM_PONG)
@@ -249,9 +252,12 @@ int Voice::voice_recv(Audio &audio, int sock)
 
 	static voicemsg_t msg;
 
-#ifdef DEDICATED
-	return 0;
-#endif
+	ret = recv(sock, (char *)&snd_rbuffer[0], SEGMENT_SIZE, 0);
+	if (ret > 0)
+	{
+		enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
+	}
+
 
 	if (remote_echo)
 	{
@@ -276,10 +282,11 @@ int Voice::voice_recv(Audio &audio, int sock)
 	}
 
 	char client[128] = "";
-	ret = recv(sock, (char *)&msg, SEGMENT_SIZE, 0);
-	if (ret > 0)
+	if (snd_rqueue.size > SEGMENT_SIZE)
 	{
 		size = ret;
+
+		dequeue(&snd_rqueue, (unsigned char *)&msg, SEGMENT_SIZE);
 
 		if (voice_recv_sequence > msg.sequence)
 		{
