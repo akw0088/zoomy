@@ -673,7 +673,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			enqueue(&rqueue, rbuffer, rsize);
 		}
 
-		if (rqueue.size >= FRAME_SIZE / 2)
+		while (rqueue.size >= FRAME_SIZE / 2)
 		{
 			dequeue(&rqueue, rbuffer, FRAME_SIZE / 2);
 
@@ -683,17 +683,10 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			printf("Showing frame %d\r\n", i++);
 		}
 
-		if (squeue.size >= FRAME_SIZE / 2)
+		while (squeue.size >= FRAME_SIZE / 2)
 		{
 			dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
 			int ret = send(sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
-			if (ret > 0 && ret < FRAME_SIZE / 2)
-			{
-				// partial send occurred (full buffer?)
-				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
-			}
-
-
 			if (ret == -1)
 			{
 				int err = WSAGetLastError();
@@ -703,7 +696,15 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 					printf("send returned -1 error %d\r\n", err);
 					sock = SOCKET_ERROR;
 				}
+				break;
 			}
+			else if (ret > 0 && ret < FRAME_SIZE / 2)
+			{
+				// partial send occurred (full buffer?)
+				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
+			}
+
+
 		}
 
 
@@ -783,7 +784,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (csock == SOCKET_ERROR)
 		{
-//			enqueue(&rqueue, red_check, FRAME_SIZE);
+			enqueue(&rqueue, red_check, FRAME_SIZE);
 			listen_state = DISCONNECTED;
 		}
 		else
