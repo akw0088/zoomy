@@ -480,6 +480,65 @@ void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height,
 	DeleteObject(hBitmap);
 }
 
+
+
+#define RGB2(b,g,r)          ((COLORREF)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)))
+
+void yuy2_to_rgb(unsigned char *yuvData, COLORREF *data)
+{
+	int j = 0;
+
+	for (int i = 0; i < WIDTH * HEIGHT; i += 2)
+	{
+		//YUY2 to ABGR
+		BYTE Y0 = yuvData[j++];
+		BYTE U =  yuvData[j++];
+		BYTE Y1 = yuvData[j++];
+		BYTE V =  yuvData[j++];
+
+		data[i] = RGB2(
+			(unsigned char)((float)Y0 + (1.4075f*(float)(V - 128))),
+			(unsigned char)((float)Y0 + (0.3455f*(float)(U - 128) - (0.7169f*(float)(V - 128)))),
+			(unsigned char)((float)Y0 + (1.7790f*(float)(U - 128)))
+		);
+
+		data[i + 1] = RGB2(
+			(unsigned char)((float)Y1 + (1.4075f*(float)(V - 128))),
+			(unsigned char)((float)Y1 + (0.3455f*(float)(U - 128) - (0.7169f*(float)(V - 128)))),
+			(unsigned char)((float)Y1 + (1.7790f*(float)(U - 128)))
+			);
+	}
+}
+
+
+
+static SOCKET sock = -1;
+static int capture = 1;
+
+
+
+// Note: lpVHdr has YUY2 data not RGB
+LRESULT frameCallback( HWND hWnd, LPVIDEOHDR lpVHdr )
+{
+	if (sock != SOCKET_ERROR && capture)
+	{
+		// prevent duplicate frames
+		if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
+		{
+			static int i = 0;
+			printf("Sending Frame %d\r\n", i++);
+			enqueue(&squeue, lpVHdr->lpData, lpVHdr->dwBytesUsed);
+			memcpy(cap_image_last, lpVHdr->lpData, lpVHdr->dwBytesUsed);
+		}
+		else
+		{
+			printf("Duplicate frame\r\n");
+		}
+	}
+
+	return 0;
+}
+
 LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	HINSTANCE hInstance = GetModuleHandle(NULL);
@@ -493,14 +552,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static RECT rect;
 	static bool init = false;
 	static WSADATA	WSAData;
-	static SOCKET sock = -1;
 	static SOCKET lsock = -1;
 	static SOCKET csock = -1;
 
 	static int listen_port = 65535;
 	static int connect_port = 65534;
 	static char connect_ip[80] = "127.0.0.1";
-	static int capture = 1;
 	static Audio audio;
 	static Voice voice;
 
@@ -611,10 +668,11 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			enqueue(&rqueue, rbuffer, rsize);
 		}
 
-		if (rqueue.size >= FRAME_SIZE)
+		if (rqueue.size >= FRAME_SIZE / 2)
 		{
-			dequeue(&rqueue, rbuffer,FRAME_SIZE);
-			memcpy(recv_image, rbuffer,FRAME_SIZE);
+			dequeue(&rqueue, rbuffer, FRAME_SIZE / 2);
+
+			yuy2_to_rgb(rbuffer, (COLORREF *)recv_image);
 			InvalidateRect(hwnd, &rect, FALSE);
 			static int i = 0;
 			printf("Showing frame %d\r\n", i++);
@@ -649,11 +707,15 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			voice.voice_send(audio, csock);
 		}
 
+		/*
+		// Old way of getting frame RGB from window
+		// Using RAW YUY2 means half the size
 		if (sock != SOCKET_ERROR && capture)
 		{
 			HDC hDC = GetDC(camhwnd);
 			HDC hTargetDC = CreateCompatibleDC(hDC);
 			RECT rect = { 0, 0, WIDTH, HEIGHT };
+
 
 			HBITMAP hBitmap = CreateCompatibleBitmap(hDC, rect.right - rect.left,
 				rect.bottom - rect.top);
@@ -668,7 +730,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				static int i = 0;
 				printf("Sending Frame %d\r\n", i++);
 
-				enqueue(&squeue, cap_image, FRAME_SIZE);
+//				enqueue(&squeue, cap_image, FRAME_SIZE);
 				memcpy(cap_image_last, cap_image, FRAME_SIZE);
 			}
 			else
@@ -680,6 +742,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			ReleaseDC(camhwnd, hDC);
 			DeleteDC(hTargetDC);
 		}
+		*/
 
 		if (sock != SOCKET_ERROR && capture == 0)
 		{
@@ -704,7 +767,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (sock == SOCKET_ERROR)
 		{
 			connect_state = DISCONNECTED;
-			memcpy(recv_image, red_check, FRAME_SIZE);
+			//memcpy(recv_image, red_check, FRAME_SIZE);
 			InvalidateRect(hwnd, &rect, FALSE);
 			connect_sock(connect_ip, connect_port, sock);
 		}
@@ -715,7 +778,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (csock == SOCKET_ERROR)
 		{
-			enqueue(&rqueue, red_check, FRAME_SIZE);
+//			enqueue(&rqueue, red_check, FRAME_SIZE);
 			listen_state = DISCONNECTED;
 		}
 		else
@@ -738,9 +801,28 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (capture)
 		{
+			// setup frame rate
+			CAPTUREPARMS CaptureParms;
+			float FramesPerSec = 30.0; // 30 frames per second
+
+			capCaptureGetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
+			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+
+			// setup resolution
+			BITMAPINFO psVideoFormat;
+
+			capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+			psVideoFormat.bmiHeader.biWidth = 640;
+			psVideoFormat.bmiHeader.biHeight = 480;
+			capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+
 			SetWindowPos(camhwnd, 0, 0, 0, WIDTH, HEIGHT, 0);
+			capSetCallbackOnFrame(camhwnd, frameCallback);
 			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+
 			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
+			capDlgVideoCompression(camhwnd);
 
 			SendMessage(camhwnd, WM_CAP_SET_SCALE, false, 0);
 			SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 16, 0);
@@ -759,7 +841,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (capture == 0)
 		{
 			// capture will draw himself, so no need to do anything
-			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, HEIGHT, cap_image);
+			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, 480, cap_image);
 		}
 
 		EndPaint(hwnd, &ps);
