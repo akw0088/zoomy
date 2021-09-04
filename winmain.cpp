@@ -13,7 +13,8 @@
 #include "queue.h"
 
 #define WMU_CAPTURE WM_USER + 1
-
+#define WIDTH 640
+#define HEIGHT 480
 
 typedef enum
 {
@@ -531,33 +532,33 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		// Create a checkerboard pattern
 		unsigned int *ipixel = (unsigned int *)blue_check;
-		for (int i = 0; i < 640; i++)
+		for (int i = 0; i < WIDTH; i++)
 		{
-			for (int j = 0; j < 480; j++)
+			for (int j = 0; j < HEIGHT; j++)
 			{
 				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * 640 + 0] = c;
+				ipixel[i + j * WIDTH + 0] = c;
 			}
 		}
 
 
 		ipixel = (unsigned int *)red_check;
-		for (int i = 0; i < 640; i++)
+		for (int i = 0; i < WIDTH; i++)
 		{
-			for (int j = 0; j < 480; j++)
+			for (int j = 0; j < HEIGHT; j++)
 			{
 				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * 640 + 0] = RGB(0, 0, c); // RGB is backwards so red is blue etc
+				ipixel[i + j * WIDTH + 0] = RGB(0, 0, c); // RGB is backwards so red is blue etc
 			}
 		}
 
 		ipixel = (unsigned int *)grey_check;
-		for (int i = 0; i < 640; i++)
+		for (int i = 0; i < WIDTH; i++)
 		{
-			for (int j = 0; j < 480; j++)
+			for (int j = 0; j < HEIGHT; j++)
 			{
 				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * 640 + 0] = RGB(c / 4, c / 4, c / 4);
+				ipixel[i + j * WIDTH + 0] = RGB(c / 4, c / 4, c / 4);
 			}
 		}
 
@@ -567,7 +568,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (capture)
 		{
 			printf("Starting Camera\r\n");
-			camhwnd = capCreateCaptureWindow("camera window", WS_CHILD | WS_VISIBLE, 640, 480, 640, 480, hwnd, 0);
+			camhwnd = capCreateCaptureWindow("camera window", WS_CHILD | WS_VISIBLE, WIDTH, HEIGHT, WIDTH, HEIGHT, hwnd, 0);
 		}
 		else
 		{
@@ -588,20 +589,20 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-		if (sock != -1)
+		if (sock != SOCKET_ERROR)
 		{
 			voice.voice_recv(audio, sock);
 		}
 
 
-		if (csock == -1)
+		if (csock == SOCKET_ERROR)
 			handle_listen(lsock, csock);
 		else
 			handle_accepted(csock, (char *)rbuffer, rsize);
 
-		if (rsize == -1)
+		if (rsize == SOCKET_ERROR)
 		{
-			csock = -1;
+			csock = SOCKET_ERROR;
 			memset(&rqueue, 0, sizeof(queue_t));
 		}
 		else if (rsize > 0)
@@ -637,22 +638,22 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				if (err != WSAEWOULDBLOCK)
 				{
 					printf("send returned -1 error %d\r\n", err);
-					sock = -1;
+					sock = SOCKET_ERROR;
 				}
 			}
 		}
 
 
-		if (csock != -1)
+		if (csock != SOCKET_ERROR)
 		{
 			voice.voice_send(audio, csock);
 		}
 
-		if (sock != -1 && capture)
+		if (sock != SOCKET_ERROR && capture)
 		{
 			HDC hDC = GetDC(camhwnd);
 			HDC hTargetDC = CreateCompatibleDC(hDC);
-			RECT rect = { 0, 0, 640, 480 };
+			RECT rect = { 0, 0, WIDTH, HEIGHT };
 
 			HBITMAP hBitmap = CreateCompatibleBitmap(hDC, rect.right - rect.left,
 				rect.bottom - rect.top);
@@ -680,7 +681,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DeleteDC(hTargetDC);
 		}
 
-		if (sock != -1 && capture == 0)
+		if (sock != SOCKET_ERROR && capture == 0)
 		{
 			static int i = 0;
 			// send checkerbox
@@ -700,7 +701,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-		if (sock == -1)
+		if (sock == SOCKET_ERROR)
 		{
 			connect_state = DISCONNECTED;
 			memcpy(recv_image, red_check, FRAME_SIZE);
@@ -712,7 +713,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			connect_state = CONNECTED;
 		}
 
-		if (csock == -1)
+		if (csock == SOCKET_ERROR)
 		{
 			enqueue(&rqueue, red_check, FRAME_SIZE);
 			listen_state = DISCONNECTED;
@@ -737,7 +738,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (capture)
 		{
-			SetWindowPos(camhwnd, 0, 0, 0, 640, 480, 0);
+			SetWindowPos(camhwnd, 0, 0, 0, WIDTH, HEIGHT, 0);
 			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
 
@@ -753,12 +754,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_PAINT:
 		hdc = BeginPaint(hwnd, &ps);
 
-		draw_pixels(hdc, hdcMem, 640, 0, 640, 480, recv_image);
+		draw_pixels(hdc, hdcMem, WIDTH, 0, WIDTH, HEIGHT, recv_image);
 
 		if (capture == 0)
 		{
 			// capture will draw himself, so no need to do anything
-			draw_pixels(hdc, hdcMem, 0, 0, 640, 480, cap_image);
+			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, HEIGHT, cap_image);
 		}
 
 		EndPaint(hwnd, &ps);
