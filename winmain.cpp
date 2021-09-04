@@ -11,7 +11,9 @@
 #include "voice.h"
 #include "audio.h"
 #include "queue.h"
+#include "types.h"
 
+// defines
 #define WMU_CAPTURE WM_USER + 1
 #define WIDTH 320
 #define HEIGHT 240
@@ -19,85 +21,22 @@
 #define DISPLAY_WIDTH 640
 #define DISPLAY_HEIGHT 480
 
-typedef enum
-{
-	CONNECTED,
-	DISCONNECTED
-} client_state_t;
-
-
-client_state_t connect_state;
-client_state_t listen_state;
-typedef int socklen_t;
-
-unsigned int cxClient, cyClient;
-
-char *inet_ntop4(const u_char *src, char *dst, socklen_t size)
-{
-	static const char fmt[] = "%u.%u.%u.%u";
-	char tmp[sizeof "255.255.255.255"];
-	int l;
-
-	l = snprintf(tmp, sizeof(tmp), fmt, src[0], src[1], src[2], src[3]);
-	if (l <= 0 || (socklen_t)l >= size) {
-		return (NULL);
-	}
-	strncpy(dst, tmp, size);
-	return (dst);
-}
-
-char *inet_ntop(int af, const void *src, char *dst, socklen_t size)
-{
-	switch (af) {
-	case AF_INET:
-		return (inet_ntop4((u_char *)src, (char *)dst, size));
-	default:
-		return (NULL);
-	}
-	/* NOTREACHED */
-}
-
-
+// prototypes
 LRESULT CALLBACK WinProc(HWND, UINT, WPARAM, LPARAM);
+int listen_sock(SOCKET &sock, unsigned short port);
+LRESULT frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr);
+void yuy2_to_rgb(unsigned char *yuvData, COLORREF *data);
+void draw_pixels(HDC hdc, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data);
+void handle_accepted(SOCKET &csock, char *buffer, int &size);
+int connect_sock(char *ip_addr, unsigned short port, SOCKET &osock);
+void RedirectIOToConsole(int debug);
+char *inet_ntop(int af, const void *src, char *dst, socklen_t size);
+int set_sock_options(SOCKET sock);
+void handle_listen(SOCKET &sock, SOCKET &csock);
+void getBitmapFromWindow(HWND hwnd, int startx, int starty, int width, int height, unsigned char *data);
 
 
-#pragma pack(push, 1)
-typedef struct
-{
-	int size;
-	int width;
-	int height;
-	short planes;
-	short bpp;
-	int compression;
-	int image_size;
-	int xres;
-	int yres;
-	int clr_used;
-	int clr_important;
-} dib_t;
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-typedef struct
-{
-	char type[2];
-	int file_size;
-	int reserved;
-	int offset;
-} bmpheader_t;
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-typedef struct
-{
-	bmpheader_t	header;
-	dib_t		dib;
-} bitmap_t;
-#pragma pack(pop)
-
-
-
+// globals (Large buffers cant be on stack)
 queue_t squeue;
 queue_t rqueue;
 
@@ -113,69 +52,14 @@ unsigned char recv_image[FRAME_SIZE];
 unsigned char cap_image[FRAME_SIZE];
 unsigned char cap_image_last[FRAME_SIZE];
 
+// Used by callback (only has hwnd and data pointer, might reference by hwnd somehow later)
+static SOCKET sock = -1;
+static int capture = 1;
 
-
-
-
-void RedirectIOToConsole(int debug)
-{
-	if (debug)
-	{
-		int	hConHandle;
-		long	lStdHandle;
-		FILE	*fp;
-		CONSOLE_SCREEN_BUFFER_INFO	coninfo;
-
-		AllocConsole();
-		HWND hwndConsole = GetConsoleWindow();
-
-		ShowWindow(hwndConsole, SW_SHOW);
-		// set the screen buffer to be big enough to let us scroll text
-		GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &coninfo);
-
-		coninfo.dwSize.Y = 512;
-		SetConsoleScreenBufferSize(GetStdHandle(STD_OUTPUT_HANDLE), coninfo.dwSize);
-
-		// redirect unbuffered STDOUT to the console
-		lStdHandle = (intptr_t)GetStdHandle(STD_OUTPUT_HANDLE);
-		hConHandle = _open_osfhandle(lStdHandle, _O_TEXT);
-
-		fp = _fdopen(hConHandle, "w");
-		*stdout = *fp;
-		setvbuf(stdout, NULL, _IONBF, 0);
-
-		// redirect unbuffered STDIN to the console
-		lStdHandle = (intptr_t)GetStdHandle(STD_INPUT_HANDLE);
-		hConHandle = _open_osfhandle(lStdHandle, _O_TEXT);
-
-		fp = _fdopen(hConHandle, "r");
-		*stdin = *fp;
-		setvbuf(stdin, NULL, _IONBF, 0);
-
-		// redirect unbuffered STDERR to the console
-		lStdHandle = (intptr_t)GetStdHandle(STD_ERROR_HANDLE);
-		hConHandle = _open_osfhandle(lStdHandle, _O_TEXT);
-		fp = _fdopen(hConHandle, "w");
-		*stderr = *fp;
-		setvbuf(stderr, NULL, _IONBF, 0);
-
-		// make cout, wcout, cin, wcin, wcerr, cerr, wclog and clog point to console as well
-		//ios::sync_with_stdio();
-
-		//Fix issue on windows 10
-		FILE *fp2 = freopen("CONOUT$", "w", stdout);
-	}
-	else
-	{
-		freopen("altEngine.log", "a", stdout);
-		freopen("altEngine.log", "a", stderr);
-	}
-}
 
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-
 	HWND hwnd;
 	MSG msg;
 	char szAppName[] = TEXT("zoomy");
@@ -225,35 +109,311 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 }
 
 
-void write_bitmap(char *filename, int width, int height, int *data)
+LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-	FILE *file;
-	bitmap_t	bitmap;
+	static WSADATA	WSAData;
+	static HWND		camhwnd = NULL;
+	static RECT		client_area;
+	static bool init = false;
+	static SOCKET lsock = -1;
+	static SOCKET csock = -1;
+	static client_state_t connect_state;
+	static client_state_t listen_state;
+	static int listen_port = 65535;
+	static int connect_port = 65534;
+	static char connect_ip[MAX_PATH] = "127.0.0.1";
+	static Audio audio;
+	static Voice voice;
 
-	memset(&bitmap, 0, sizeof(bitmap_t));
-	memcpy(bitmap.header.type, "BM", 2);
-	bitmap.header.offset = sizeof(bmpheader_t);
-	bitmap.dib.size = sizeof(dib_t);
-	bitmap.dib.width = width;
-	bitmap.dib.height = height;
-	bitmap.dib.planes = 1;
-	bitmap.dib.bpp = 32;
-	bitmap.dib.compression = 0;
-	bitmap.dib.image_size = width * height * sizeof(int);
-	bitmap.header.file_size = sizeof(bmpheader_t) + sizeof(dib_t) + bitmap.dib.image_size;
-
-	file = fopen(filename, "wb");
-	if (file == NULL)
+	switch (message)
 	{
-		perror("Unable to write file");
-		return;
+	case WM_CREATE:
+	{
+		audio.init();
+		voice.init(audio);
+		audio.capture_start();
+		WSAStartup(MAKEWORD(2, 0), &WSAData);
+		RedirectIOToConsole(true);
+		GetClientRect(hwnd, &client_area);
+
+		SetTimer(hwnd, 0, 500, NULL);
+
+		char path[MAX_PATH] = { 0 };
+		GetCurrentDirectory(MAX_PATH, path);
+		lstrcat(path, TEXT("\\zoomy.ini"));
+
+		listen_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("listen"), 65535, path);
+		connect_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("connect"), 65534, path);
+		GetPrivateProfileString(TEXT("zoomy"), TEXT("ip"), "127.0.0.1", connect_ip, MAX_PATH, path);
+		capture = GetPrivateProfileInt(TEXT("zoomy"), TEXT("capture"), 1, path);
+
+
+		// Create a checkerboard pattern
+		unsigned int *ipixel = (unsigned int *)blue_check;
+		for (int i = 0; i < WIDTH; i++)
+		{
+			for (int j = 0; j < HEIGHT; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * WIDTH + 0] = c;
+			}
+		}
+
+
+		ipixel = (unsigned int *)red_check;
+		for (int i = 0; i < WIDTH; i++)
+		{
+			for (int j = 0; j < HEIGHT; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * WIDTH + 0] = RGB(0, 0, c); // RGB is backwards so red is blue etc
+			}
+		}
+
+		ipixel = (unsigned int *)grey_check;
+		for (int i = 0; i < WIDTH; i++)
+		{
+			for (int j = 0; j < HEIGHT; j++)
+			{
+				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
+				ipixel[i + j * WIDTH + 0] = RGB(c / 4, c / 4, c / 4);
+			}
+		}
+
+		memcpy(cap_image, grey_check, FRAME_SIZE);
+		memcpy(recv_image, grey_check, FRAME_SIZE);
+
+		if (capture)
+		{
+			printf("Starting Camera\r\n");
+			camhwnd = capCreateCaptureWindow("camera window", WS_CHILD | WS_VISIBLE, WIDTH, HEIGHT, WIDTH, HEIGHT, hwnd, 0);
+		}
+		else
+		{
+			printf("*** Camera not enabled ***\r\n");
+			memcpy(cap_image, blue_check, FRAME_SIZE);
+		}
+
+
+		listen_sock(lsock, listen_port);
+		set_sock_options(lsock);
+
+		break;
+	}
+	case WMU_CAPTURE:
+	{
+		int rsize = 0;
+
+		if (init == false)
+			return 0;
+
+		if (sock != SOCKET_ERROR)
+		{
+			voice.voice_recv(audio, sock);
+		}
+
+
+		if (csock == SOCKET_ERROR)
+			handle_listen(lsock, csock);
+		else
+			handle_accepted(csock, (char *)rbuffer, rsize);
+
+		if (rsize == SOCKET_ERROR)
+		{
+			csock = SOCKET_ERROR;
+			memset(&rqueue, 0, sizeof(queue_t));
+		}
+		else if (rsize > 0)
+		{
+			// add data to circular queue
+			enqueue(&rqueue, rbuffer, rsize);
+		}
+
+		while (rqueue.size >= FRAME_SIZE / 2)
+		{
+			dequeue(&rqueue, rbuffer, FRAME_SIZE / 2);
+
+			yuy2_to_rgb(rbuffer, (COLORREF *)recv_image);
+			InvalidateRect(hwnd, &client_area, FALSE);
+			static int i = 0;
+			printf("Showing frame %d\r\n", i++);
+		}
+
+		while (squeue.size >= FRAME_SIZE / 2)
+		{
+			dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
+			int ret = send(sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
+			if (ret == -1)
+			{
+				int err = WSAGetLastError();
+
+				if (err != WSAEWOULDBLOCK)
+				{
+					printf("send returned -1 error %d\r\n", err);
+					sock = SOCKET_ERROR;
+				}
+				break;
+			}
+			else if (ret > 0 && ret < FRAME_SIZE / 2)
+			{
+				// partial send occurred (full buffer?)
+				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
+			}
+
+
+		}
+
+
+		if (csock != SOCKET_ERROR)
+		{
+			voice.voice_send(audio, csock);
+		}
+
+		// Old way of getting frame RGB from window
+		// Using RAW YUY2 means half the size using callback
+#if 0
+		if (sock != SOCKET_ERROR && capture)
+		{
+			getBitmapFromWindow(camhwnd, 0, 0, WIDTH, HEIGHT, cap_image);
+			// prevent duplicate frames
+			if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
+			{
+				enqueue(&squeue, cap_image, FRAME_SIZE);
+				memcpy(cap_image_last, cap_image, FRAME_SIZE);
+			}
+			else
+			{
+				printf("Duplicate frame\r\n");
+			}
+		}
+#endif
+
+		if (sock != SOCKET_ERROR && capture == 0)
+		{
+			static int i = 0;
+			// send checkerbox
+
+			if (i % 500 == 0)
+			{
+				printf("Sending checkbox %d\r\n", i++);
+				enqueue(&squeue, cap_image, FRAME_SIZE);
+			}
+		}
+
+		break;
+	}
+	case WM_TIMER:
+	{
+		// Dont attempt anything until video is streaming
+		if (init == false)
+			return 0;
+
+		if (sock == SOCKET_ERROR)
+		{
+			connect_state = DISCONNECTED;
+			//memcpy(recv_image, red_check, FRAME_SIZE);
+			InvalidateRect(hwnd, &client_area, FALSE);
+			connect_sock(connect_ip, connect_port, sock);
+		}
+		else
+		{
+			connect_state = CONNECTED;
+		}
+
+		if (csock == SOCKET_ERROR)
+		{
+			enqueue(&rqueue, red_check, FRAME_SIZE);
+			listen_state = DISCONNECTED;
+		}
+		else
+		{
+			listen_state = CONNECTED;
+		}
+
+		break;
+	}
+	case WM_SIZE:
+	{
+		int	width, height;
+
+		width = LOWORD(lParam);
+		height = HIWORD(lParam);
+
+		if (capture)
+		{
+			// setup frame rate
+//			CAPTUREPARMS CaptureParms;
+//			float FramesPerSec = 30.0; // 30 frames per second
+
+//			capCaptureGetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+//			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
+//			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
+
+			// setup resolution
+			BITMAPINFO psVideoFormat;
+
+			capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+			psVideoFormat.bmiHeader.biWidth = WIDTH;
+			psVideoFormat.bmiHeader.biHeight = HEIGHT;
+			capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+
+
+			CAPDRIVERCAPS CapDrvCaps;
+
+			capDriverGetCaps(camhwnd, &CapDrvCaps, sizeof(CAPDRIVERCAPS));
+
+			if (CapDrvCaps.fHasOverlay)
+				capOverlay(camhwnd, TRUE); //for speedup
+
+			SetWindowPos(camhwnd, 0, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0);
+			capSetCallbackOnFrame(camhwnd, frameCallback);
+			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+
+			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
+			capDlgVideoCompression(camhwnd);
+
+			SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
+			SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 16, 0);
+			SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
+		}
+		init = true;
+
+		break;
 	}
 
-	fwrite(&bitmap, 1, sizeof(bitmap_t), file);
-	fwrite((void *)data, 1, width * height * 4, file);
-	fclose(file);
-}
+	case WM_PAINT:
+	{
+		PAINTSTRUCT ps;
+		HDC		hdc;
 
+		hdc = BeginPaint(hwnd, &ps);
+
+		draw_pixels(hdc, DISPLAY_WIDTH, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, recv_image);
+
+		if (capture == 0)
+		{
+			// capture will draw himself, so no need to do anything
+			draw_pixels(hdc, 0, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, cap_image);
+		}
+
+		EndPaint(hwnd, &ps);
+		return 0;
+	}
+	case WM_DESTROY:
+	{
+		if (capture)
+		{
+			SendMessage(camhwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+		}
+		PostQuitMessage(0);
+		break;
+	}
+
+	default:
+		return DefWindowProc(hwnd, message, wParam, lParam);
+	}
+	return 0;
+}
 
 
 int listen_sock(SOCKET &sock, unsigned short port)
@@ -417,11 +577,6 @@ int connect_sock(char *ip_addr, unsigned short port, SOCKET &osock)
 	return 0;
 }
 
-
-
-
-
-
 void handle_listen(SOCKET &sock, SOCKET &csock)
 {
 	struct sockaddr_in csockaddr;
@@ -472,9 +627,10 @@ void handle_accepted(SOCKET &csock, char *buffer, int &size)
 
 }
 
-void draw_pixels(HDC hdc, HDC hdcMem, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data)
+void draw_pixels(HDC hdc, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data)
 {
 	HBITMAP hBitmap, hOldBitmap;
+	HDC hdcMem;
 
 	hBitmap = CreateCompatibleBitmap(hdc, width, height);
 	SetBitmapBits(hBitmap, sizeof(int) * width * height, data);
@@ -519,12 +675,6 @@ void yuy2_to_rgb(unsigned char *yuvData, COLORREF *data)
 }
 
 
-
-static SOCKET sock = -1;
-static int capture = 1;
-
-
-
 // Note: lpVHdr has YUY2 data not RGB
 LRESULT frameCallback( HWND hWnd, LPVIDEOHDR lpVHdr )
 {
@@ -547,335 +697,20 @@ LRESULT frameCallback( HWND hWnd, LPVIDEOHDR lpVHdr )
 	return 0;
 }
 
-LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+void getBitmapFromWindow(HWND hwnd, int startx, int starty, int width, int height, unsigned char *data)
 {
-	HINSTANCE hInstance = GetModuleHandle(NULL);
+	HDC hdc = GetDC(hwnd);
+	HDC hTargetDC = CreateCompatibleDC(hdc);
+	RECT rect = { startx, starty, width, height };
 
-	static HWND camhwnd = NULL;
-	static HDC hdc;
-	static HDC hdcMem;
-	static PAINTSTRUCT ps;
-	static HBITMAP hbm;
-	static RECT rc;
-	static RECT rect;
-	static bool init = false;
-	static WSADATA	WSAData;
-	static SOCKET lsock = -1;
-	static SOCKET csock = -1;
 
-	static int listen_port = 65535;
-	static int connect_port = 65534;
-	static char connect_ip[80] = "127.0.0.1";
-	static Audio audio;
-	static Voice voice;
+	HBITMAP hBitmap = CreateCompatibleBitmap(hdc, rect.right - rect.left, rect.bottom - rect.top);
+	SelectObject(hTargetDC, hBitmap);
+	PrintWindow(hwnd, hTargetDC, PW_CLIENTONLY);
 
-	switch (message)                  /* handle the messages */
-	{
-	case WM_CREATE:
-	{
-		audio.init();
-		voice.init(audio);
-		audio.capture_start();
-		WSAStartup(MAKEWORD(2, 0), &WSAData);
-		RedirectIOToConsole(true);
-		GetClientRect(hwnd, &rect);
+	GetBitmapBits(hBitmap, FRAME_SIZE, data);
 
-		cxClient = rect.right;
-		cyClient = rect.bottom;
-
-		SetTimer(hwnd, 0, 500, NULL);
-
-		char path[MAX_PATH] = { 0 };
-		GetCurrentDirectory(MAX_PATH, path);
-		lstrcat(path, TEXT("\\zoomy.ini"));
-
-		listen_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("listen"), 65535, path);
-		connect_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("connect"), 65534, path);
-		GetPrivateProfileString(TEXT("zoomy"), TEXT("ip"), "127.0.0.1", connect_ip, 80, path);
-		capture = GetPrivateProfileInt(TEXT("zoomy"), TEXT("capture"), 1, path);
-
-
-		// Create a checkerboard pattern
-		unsigned int *ipixel = (unsigned int *)blue_check;
-		for (int i = 0; i < WIDTH; i++)
-		{
-			for (int j = 0; j < HEIGHT; j++)
-			{
-				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * WIDTH + 0] = c;
-			}
-		}
-
-
-		ipixel = (unsigned int *)red_check;
-		for (int i = 0; i < WIDTH; i++)
-		{
-			for (int j = 0; j < HEIGHT; j++)
-			{
-				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * WIDTH + 0] = RGB(0, 0, c); // RGB is backwards so red is blue etc
-			}
-		}
-
-		ipixel = (unsigned int *)grey_check;
-		for (int i = 0; i < WIDTH; i++)
-		{
-			for (int j = 0; j < HEIGHT; j++)
-			{
-				unsigned char c = (((i & 0x8) == 0) ^ ((j & 0x8) == 0)) * 255;
-				ipixel[i + j * WIDTH + 0] = RGB(c / 4, c / 4, c / 4);
-			}
-		}
-
-		memcpy(cap_image, grey_check, FRAME_SIZE);
-		memcpy(recv_image, grey_check, FRAME_SIZE);
-
-		if (capture)
-		{
-			printf("Starting Camera\r\n");
-			camhwnd = capCreateCaptureWindow("camera window", WS_CHILD | WS_VISIBLE, WIDTH, HEIGHT, WIDTH, HEIGHT, hwnd, 0);
-		}
-		else
-		{
-			printf("*** Camera not enabled ***\r\n");
-			memcpy(cap_image, blue_check, FRAME_SIZE);
-		}
-
-
-		listen_sock(lsock, listen_port);
-		set_sock_options(lsock);
-
-		break;
-	}
-	case WMU_CAPTURE:
-	{
-		int rsize = 0;
-
-		if (init == false)
-			return 0;
-
-		if (sock != SOCKET_ERROR)
-		{
-			voice.voice_recv(audio, sock);
-		}
-
-
-		if (csock == SOCKET_ERROR)
-			handle_listen(lsock, csock);
-		else
-			handle_accepted(csock, (char *)rbuffer, rsize);
-
-		if (rsize == SOCKET_ERROR)
-		{
-			csock = SOCKET_ERROR;
-			memset(&rqueue, 0, sizeof(queue_t));
-		}
-		else if (rsize > 0)
-		{
-			// add data to circular queue
-			enqueue(&rqueue, rbuffer, rsize);
-		}
-
-		while (rqueue.size >= FRAME_SIZE / 2)
-		{
-			dequeue(&rqueue, rbuffer, FRAME_SIZE / 2);
-
-			yuy2_to_rgb(rbuffer, (COLORREF *)recv_image);
-			InvalidateRect(hwnd, &rect, FALSE);
-			static int i = 0;
-			printf("Showing frame %d\r\n", i++);
-		}
-
-		while (squeue.size >= FRAME_SIZE / 2)
-		{
-			dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
-			int ret = send(sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
-			if (ret == -1)
-			{
-				int err = WSAGetLastError();
-
-				if (err != WSAEWOULDBLOCK)
-				{
-					printf("send returned -1 error %d\r\n", err);
-					sock = SOCKET_ERROR;
-				}
-				break;
-			}
-			else if (ret > 0 && ret < FRAME_SIZE / 2)
-			{
-				// partial send occurred (full buffer?)
-				enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
-			}
-
-
-		}
-
-
-		if (csock != SOCKET_ERROR)
-		{
-			voice.voice_send(audio, csock);
-		}
-
-		/*
-		// Old way of getting frame RGB from window
-		// Using RAW YUY2 means half the size
-		if (sock != SOCKET_ERROR && capture)
-		{
-			HDC hDC = GetDC(camhwnd);
-			HDC hTargetDC = CreateCompatibleDC(hDC);
-			RECT rect = { 0, 0, WIDTH, HEIGHT };
-
-
-			HBITMAP hBitmap = CreateCompatibleBitmap(hDC, rect.right - rect.left,
-				rect.bottom - rect.top);
-			SelectObject(hTargetDC, hBitmap);
-			PrintWindow(camhwnd, hTargetDC, PW_CLIENTONLY);
-
-			GetBitmapBits(hBitmap, FRAME_SIZE, &cap_image);
-
-			// prevent duplicate frames
-			if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
-			{
-				static int i = 0;
-				printf("Sending Frame %d\r\n", i++);
-
-//				enqueue(&squeue, cap_image, FRAME_SIZE);
-				memcpy(cap_image_last, cap_image, FRAME_SIZE);
-			}
-			else
-			{
-				printf("Duplicate frame\r\n");
-			}
-
-			DeleteObject(hBitmap);
-			ReleaseDC(camhwnd, hDC);
-			DeleteDC(hTargetDC);
-		}
-		*/
-
-		if (sock != SOCKET_ERROR && capture == 0)
-		{
-			static int i = 0;
-			// send checkerbox
-
-			if (i % 500 == 0)
-			{
-				printf("Sending checkbox %d\r\n", i++);
-				enqueue(&squeue, cap_image, FRAME_SIZE);
-			}
-		}
-
-		break;
-	}
-	case WM_TIMER:
-	{
-		// Dont attempt anything until video is streaming
-		if (init == false)
-			return 0;
-
-		if (sock == SOCKET_ERROR)
-		{
-			connect_state = DISCONNECTED;
-			//memcpy(recv_image, red_check, FRAME_SIZE);
-			InvalidateRect(hwnd, &rect, FALSE);
-			connect_sock(connect_ip, connect_port, sock);
-		}
-		else
-		{
-			connect_state = CONNECTED;
-		}
-
-		if (csock == SOCKET_ERROR)
-		{
-			enqueue(&rqueue, red_check, FRAME_SIZE);
-			listen_state = DISCONNECTED;
-		}
-		else
-		{
-			listen_state = CONNECTED;
-		}
-
-		break;
-	}
-	case WM_SIZE:
-	{
-		int	width, height;
-
-		width = LOWORD(lParam);
-		height = HIWORD(lParam);
-
-		cxClient = width;
-		cyClient = height;
-
-
-		if (capture)
-		{
-			// setup frame rate
-//			CAPTUREPARMS CaptureParms;
-//			float FramesPerSec = 30.0; // 30 frames per second
-
-//			capCaptureGetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
-//			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
-//			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
-
-			// setup resolution
-			BITMAPINFO psVideoFormat;
-
-			capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
-			psVideoFormat.bmiHeader.biWidth = WIDTH;
-			psVideoFormat.bmiHeader.biHeight = HEIGHT;
-			capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
-
-
-			CAPDRIVERCAPS CapDrvCaps;
-
-			capDriverGetCaps(camhwnd, &CapDrvCaps, sizeof(CAPDRIVERCAPS));
-
-			if (CapDrvCaps.fHasOverlay)
-				capOverlay(camhwnd, TRUE); //for speedup
-
-			SetWindowPos(camhwnd, 0, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0);
-			capSetCallbackOnFrame(camhwnd, frameCallback);
-			SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-
-			SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
-			capDlgVideoCompression(camhwnd);
-
-			SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
-			SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 16, 0);
-			SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
-		}
-		init = true;
-
-		break;
-	}
-
-	case WM_PAINT:
-		hdc = BeginPaint(hwnd, &ps);
-
-		draw_pixels(hdc, hdcMem, DISPLAY_WIDTH, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, recv_image);
-
-		if (capture == 0)
-		{
-			// capture will draw himself, so no need to do anything
-			draw_pixels(hdc, hdcMem, 0, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, cap_image);
-		}
-
-		EndPaint(hwnd, &ps);
-		return 0;
-
-	case WM_DESTROY:
-	{
-		if (capture)
-		{
-			SendMessage(camhwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-		}
-		PostQuitMessage(0);
-		break;
-	}
-
-	default:
-		return DefWindowProc(hwnd, message, wParam, lParam);
-	}
-	return 0;
+	DeleteObject(hBitmap);
+	ReleaseDC(hwnd, hdc);
+	DeleteDC(hTargetDC);
 }
