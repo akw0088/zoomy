@@ -1,17 +1,17 @@
 #ifndef QUEUE_H
 #define QUEUE_H
-#define FRAME_SIZE (640 * 480 * 4)
-#define SIZE_QUEUE (FRAME_SIZE * 10) // 10 frames
+#define SIZE_QUEUE (1000 * 1024) // 1MB
 
 typedef struct
 {
-	int size;
-	int tail;
-	int head;
+	unsigned int size;
+	unsigned int tail;
+	unsigned int head;
 	char buffer[SIZE_QUEUE];
 } queue_t;
 
 int enqueue(queue_t *queue, unsigned char *buffer, int size);
 int dequeue(queue_t *queue, unsigned char *buffer, int size);
 int enqueue_front(queue_t *queue, unsigned char *buffer, int size);
+int dequeue_peek(queue_t *queue, unsigned char *buffer, int size);
 #endif

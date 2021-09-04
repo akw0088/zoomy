@@ -1,7 +1,7 @@
 #include <AL/al.h>
 #include <AL/alc.h>
 
-#define VOICE_HEADER 4
+#define VOICE_HEADER 8
 #define VOICE_SAMPLE_RATE 48000
 #define VOICE_FORMAT	AL_FORMAT_MONO8
 

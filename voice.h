@@ -13,8 +13,8 @@
 
 typedef struct
 {
-	unsigned short int sequence;
-	unsigned short int qport;
+	unsigned int magic;
+	unsigned int size;
 	unsigned char data[8192];
 } voicemsg_t;
 
@@ -40,9 +40,9 @@ public:
 	int init(Audio &audio);
 	void destroy();
 	int encode(unsigned short *pcm, unsigned int size, unsigned char *data, int &num_bytes);
-	int decode(unsigned char *data, unsigned short *pcm, unsigned int &size);
-	int voice_send(Audio &audio, int sock);
-	int voice_recv(Audio &audio, int sock);
+	int decode(unsigned char *data, int compressed_size, unsigned short *pcm, unsigned int &size);
+	int voice_send(Audio &audio, int &sock);
+	int voice_recv(Audio &audio, int &sock);
 
 	char server[128];
 private:

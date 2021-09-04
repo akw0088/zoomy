@@ -11,12 +11,10 @@ unsigned char snd_sbuffer[SEGMENT_SIZE * 5];
 
 Voice::Voice()
 {
-	voice_send_sequence = 0;
-	voice_recv_sequence = 0;
 }
 
 int Voice::init(Audio &audio)
-{ 
+{
 
 #ifdef VOICECHAT
 #ifndef DEDICATED
@@ -42,11 +40,11 @@ int Voice::init(Audio &audio)
 	//OPUS_APPLICATION_VOIP -- voice
 	//OPUS_APPLICATION_RESTRICTED_LOWDELAY -- low delay voice
 	encoder = opus_encoder_create(VOICE_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &ret);
-	if (ret < 0) 
-	{ 
-		printf("failed to create an encoder: %s\n", opus_strerror(ret)); 
-		return -1; 
-	} 
+	if (ret < 0)
+	{
+		printf("failed to create an encoder: %s\n", opus_strerror(ret));
+		return -1;
+	}
 
 
 	int complexity = 0;
@@ -59,19 +57,19 @@ int Voice::init(Audio &audio)
 	}
 
 	/*
-	ret = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE)); 
-	if (ret < 0) 
-	{ 
-		printf("failed to set bitrate: %s\n", opus_strerror(ret)); 
-		return -1; 
-	} 
+	ret = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE));
+	if (ret < 0)
+	{
+	printf("failed to set bitrate: %s\n", opus_strerror(ret));
+	return -1;
+	}
 	*/
 
 	decoder = opus_decoder_create(VOICE_SAMPLE_RATE, 1, &ret);
-	if (ret < 0) 
-	{ 
-		 printf("failed to create decoder: %s\n", opus_strerror(ret)); 
-		 return -1; 
+	if (ret < 0)
+	{
+		printf("failed to create decoder: %s\n", opus_strerror(ret));
+		return -1;
 	}
 #endif
 	return 0;
@@ -101,59 +99,48 @@ int Voice::encode(unsigned short *pcm, unsigned int size, unsigned char *data, i
 	// Encode the frame.
 	num_bytes = opus_encode(encoder, (opus_int16 *)extend_buffer, SEGMENT_SIZE, data, MAX_PACKET_SIZE);
 	if (num_bytes < 0)
-	{ 
-		printf("encode failed: %s\n", opus_strerror(num_bytes)); 
-		return -1; 
+	{
+		printf("encode failed: %s\n", opus_strerror(num_bytes));
+		return -1;
 	}
 #endif
 	return 0;
 }
 
 
-int Voice::decode(unsigned char *data, unsigned short *pcm, unsigned int &size)
-{ 
+int Voice::decode(unsigned char *data, int compressed_size, unsigned short *pcm, unsigned int &size)
+{
 #ifdef VOICECHAT
 	int frame_size;
 
-	frame_size = opus_decode(decoder, data, size, (opus_int16 *)pcm, MAX_SEGMENT_SIZE, 0);
+	frame_size = opus_decode(decoder, data, compressed_size, (opus_int16 *)pcm, MAX_SEGMENT_SIZE, 0);
 	if (frame_size < 0)
-	{ 
-		printf("decoder failed: %s\n", opus_strerror(frame_size)); 
-		return -1; 
-	} 
+	{
+		printf("decoder failed: %s\n", opus_strerror(frame_size));
+		return -1;
+	}
 	size = frame_size;
 #endif
 	return 0;
 }
 
-int Voice::voice_send(Audio &audio, int sock)
+int Voice::voice_send(Audio &audio, int &sock)
 {
-	unsigned int size;
-	int isize;
 	static int pong = 0;
-	static bool looped = false;
-	unsigned int uiBuffer;
+	static bool buffers_full = false; // first time around buffers are empty, different logic required
 	int buffersProcessed = 0;
 	bool local_echo = false;
 	static voicemsg_t msg;
+	int pcm_size;
+	unsigned int uiBuffer;
 
 	if (audio.microphone == NULL)
 	{
 		return 0;
 	}
 
-	if (snd_squeue.size > SEGMENT_SIZE)
-	{
-		int size = dequeue(&snd_squeue, &snd_sbuffer[0], SEGMENT_SIZE);
 
-		int sent = send(sock, (char *)&snd_sbuffer[0], size, 0);
-		if (sent < SEGMENT_SIZE)
-		{
-			enqueue_front(&snd_squeue, &snd_sbuffer[sent], SEGMENT_SIZE - sent);
-		}
-	}
-
-	if (looped)
+	if (buffers_full)
 	{
 		if (local_echo)
 		{
@@ -179,22 +166,20 @@ int Voice::voice_send(Audio &audio, int sock)
 			}
 		}
 
-		audio.capture_sample(mic_pcm[pong], isize);
-		size = isize;
+		audio.capture_sample(mic_pcm[pong], pcm_size);
 		if (local_echo)
 		{
-			alBufferData(uiBuffer, VOICE_FORMAT, mic_pcm[pong], size, VOICE_SAMPLE_RATE);
+			alBufferData(uiBuffer, VOICE_FORMAT, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
 			alSourceQueueBuffers(mic_source, 1, &uiBuffer);
 		}
 
 	}
 	else
 	{
-		audio.capture_sample(mic_pcm[pong], isize);
-		size = isize;
-		if (local_echo && size > 0)
+		audio.capture_sample(mic_pcm[pong], pcm_size);
+		if (local_echo)
 		{
-			alBufferData(mic_buffer[pong], VOICE_FORMAT, mic_pcm[pong], size, VOICE_SAMPLE_RATE);
+			alBufferData(mic_buffer[pong], VOICE_FORMAT, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
 			int al_err = alGetError();
 			if (al_err != AL_NO_ERROR)
 			{
@@ -204,21 +189,30 @@ int Voice::voice_send(Audio &audio, int sock)
 		}
 	}
 
-	if (size == 0)
+	if (pcm_size == 0)
 	{
 		return 0;
 	}
 
-
-
 	int num_bytes = 0;
-	encode(mic_pcm[pong], size, msg.data, num_bytes);
+	encode(mic_pcm[pong], pcm_size, msg.data, num_bytes);
 
+	msg.magic = 1337;
+	msg.size = num_bytes + VOICE_HEADER;
 
-	msg.sequence = voice_send_sequence++;
-	msg.qport = qport;
+	enqueue(&snd_squeue, (unsigned char *)&msg, msg.size);
 
-	enqueue(&snd_squeue, (unsigned char *)&msg, VOICE_HEADER + num_bytes);
+	while (snd_squeue.size > 0 && sock != -1)
+	{
+		int dsize = dequeue(&snd_squeue, &snd_sbuffer[0], snd_squeue.size);
+
+		int sent = send(sock, (char *)&snd_sbuffer[0], dsize, 0);
+		if (sent > 0 && sent < dsize)
+		{
+			enqueue_front(&snd_squeue, &snd_sbuffer[sent], dsize - sent);
+		}
+	}
+
 
 	pong++;
 	if (pong >= NUM_PONG)
@@ -226,43 +220,56 @@ int Voice::voice_send(Audio &audio, int sock)
 		pong = 0;
 		if (local_echo)
 		{
-			if (looped == false)
+			if (buffers_full == false)
 			{
-				looped = true;
+				buffers_full = true;
 				audio.play(mic_source);
 			}
 		}
 	}
 
-	if (size)
-		return 1;
-	else
-		return 0;
+
+
+	return 0;
 }
 
-int Voice::voice_recv(Audio &audio, int sock)
+int Voice::voice_recv(Audio &audio, int &sock)
 {
-	unsigned int size;
-	int ret;
+	unsigned int pcm_size;
+	int ret = 1;
 	static int pong = 0;
-	static bool looped = true;
+	static bool buffers_full = false;
 	int buffersProcessed = 0;
 	unsigned int uiBuffer;
 	bool remote_echo = true;
 
 	static voicemsg_t msg;
 
-	ret = recv(sock, (char *)&snd_rbuffer[0], SEGMENT_SIZE, 0);
-	if (ret > 0)
+	// recv any data on socket and add to rqueue
+	while (ret > 0 && sock != -1)
 	{
-		enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
-	}
+		ret = recv(sock, (char *)&snd_rbuffer[0], 128, 0);
+		if (ret > 0)
+		{
+			enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
+		}
+		else if (ret == -1)
+		{
+			int err = WSAGetLastError();
 
+			if (err != WSAEWOULDBLOCK)
+			{
+				printf("recv returned -1 error %d\r\n", err);
+				return -1;
+			}
+		}
+	}
 
 	if (remote_echo)
 	{
 
-		if (looped)
+#ifndef DEDICATED
+		if (buffers_full)
 		{
 			alGetSourcei(decode_source, AL_BUFFERS_PROCESSED, &buffersProcessed);
 			if (buffersProcessed == 0)
@@ -279,69 +286,64 @@ int Voice::voice_recv(Audio &audio, int sock)
 			}
 
 		}
+#endif
 	}
 
+
 	char client[128] = "";
-	if (snd_rqueue.size > SEGMENT_SIZE)
+
+	// check queue for a sound segment
+	while (snd_rqueue.size > 0)
 	{
-		size = ret;
+		dequeue_peek(&snd_rqueue, (unsigned char *)&msg, VOICE_HEADER);
 
-		dequeue(&snd_rqueue, (unsigned char *)&msg, SEGMENT_SIZE);
-
-		if (voice_recv_sequence > msg.sequence)
+		if (snd_rqueue.size > msg.size && msg.magic == 1337)
 		{
-			// old packet
-			printf("voice chat got old packet %d older than %d\n", msg.sequence, voice_recv_sequence);
-			voice_recv_sequence = msg.sequence + 1;
-			return 0;
-		}
-		else
-		{
-			voice_recv_sequence = msg.sequence + 1;
-		}
-
-
-		if (remote_echo)
-		{
-			decode(msg.data, decode_pcm[pong], size);
-
-			if (looped)
+			dequeue(&snd_rqueue, (unsigned char *)&msg, msg.size);
+			if (remote_echo)
 			{
-#ifndef DEDICATED
-				alSourceUnqueueBuffers(decode_source, 1, &uiBuffer);
-				alBufferData(uiBuffer, AL_FORMAT_MONO16, decode_pcm[pong], size, VOICE_SAMPLE_RATE);
-				alSourceQueueBuffers(decode_source, 1, &uiBuffer);
-#endif
-			}
-			else
-			{
-#ifndef DEDICATED
-				alBufferData(decode_buffer[pong], AL_FORMAT_MONO16, decode_pcm[pong], size, VOICE_SAMPLE_RATE);
-				alSourceQueueBuffers(decode_source, 1, &decode_buffer[pong]);
-#endif
-			}
+				// decode opus data
+				decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], pcm_size);
 
-
-			pong++;
-			if (pong >= NUM_PONG)
-			{
-				pong = 0;
-
-				if (looped == false)
+				if (buffers_full)
 				{
-					looped = true;
-					audio.play(decode_source);
+#ifndef DEDICATED
+					alSourceUnqueueBuffers(decode_source, 1, &uiBuffer);
+					alBufferData(uiBuffer, AL_FORMAT_MONO16, decode_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
+					alSourceQueueBuffers(decode_source, 1, &uiBuffer);
+#endif
+				}
+				else
+				{
+#ifndef DEDICATED
+					alBufferData(decode_buffer[pong], AL_FORMAT_MONO16, decode_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
+					alSourceQueueBuffers(decode_source, 1, &decode_buffer[pong]);
+#endif
+				}
+
+				pong++;
+				if (pong >= NUM_PONG)
+				{
+					pong = 0;
+
+					if (buffers_full == false)
+					{
+						buffers_full = true;
+						audio.play(decode_source);
+					}
 				}
 			}
 		}
+		else
+		{
+			memset(&snd_rqueue, 0, sizeof(queue_t));
+			break;
+		}
 
 
 	}
 
-	if (ret > 0)
-		return 1;
-	else
-		return 0;
+	return 0;
 }
 
 
@@ -349,9 +351,9 @@ int Voice::voice_recv(Audio &audio, int sock)
 void Voice::destroy()
 {
 #ifdef VOICECHAT
-	 opus_encoder_destroy(encoder);
-	 opus_decoder_destroy(decoder); 
+	opus_encoder_destroy(encoder);
+	opus_decoder_destroy(decoder);
 #endif
-    
+
 }
 

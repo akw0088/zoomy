@@ -346,7 +346,6 @@ void Audio::capture_sample(unsigned short *pcm, int &size)
 	if (microphone == NULL)
 		return;
 
-	static int max_recv = 0;
 
 	alcGetIntegerv(microphone, ALC_CAPTURE_SAMPLES, sizeof(int), (int *)&size);
 	if (size > SEGMENT_SIZE)
@@ -363,8 +362,7 @@ void Audio::capture_sample(unsigned short *pcm, int &size)
 
 	alcCaptureSamples(microphone, pcm, size);
 
-	if (size > max_recv)
-		max_recv = size;
+
 }
 
 
