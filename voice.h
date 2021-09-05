@@ -41,8 +41,8 @@ public:
 	void destroy();
 	int encode(unsigned short *pcm, unsigned int size, unsigned char *data, int &num_bytes);
 	int decode(unsigned char *data, int compressed_size, unsigned short *pcm, unsigned int max_size);
-	int voice_send(Audio &audio, int &sock);
-	int voice_recv(Audio &audio, int &sock);
+	int voice_send(Audio &audio, int sock, const char *ip, int port);
+	int voice_recv(Audio &audio, int sock, const char *ip, int port);
 
 	char server[128];
 private:

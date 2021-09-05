@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <winsock.h>
 #include <vfw.h>
@@ -8,33 +9,6 @@
 #include <io.h>
 
 #include "types.h"
-
-
-
-char *inet_ntop4(const u_char *src, char *dst, socklen_t size)
-{
-	static const char fmt[] = "%u.%u.%u.%u";
-	char tmp[sizeof "255.255.255.255"];
-	int l;
-
-	l = snprintf(tmp, sizeof(tmp), fmt, src[0], src[1], src[2], src[3]);
-	if (l <= 0 || (socklen_t)l >= size) {
-		return (NULL);
-	}
-	strncpy(dst, tmp, size);
-	return (dst);
-}
-
-char *inet_ntop(int af, const void *src, char *dst, socklen_t size)
-{
-	switch (af) {
-	case AF_INET:
-		return (inet_ntop4((u_char *)src, (char *)dst, size));
-	default:
-		return (NULL);
-	}
-	/* NOTREACHED */
-}
 
 void RedirectIOToConsole(int debug)
 {
@@ -86,8 +60,8 @@ void RedirectIOToConsole(int debug)
 	}
 	else
 	{
-		freopen("altEngine.log", "a", stdout);
-		freopen("altEngine.log", "a", stderr);
+		freopen("console.log", "a", stdout);
+		freopen("console.log", "a", stderr);
 	}
 }
 
@@ -119,3 +93,4 @@ void write_bitmap(char *filename, int width, int height, int *data)
 	fwrite((void *)data, 1, width * height * 4, file);
 	fclose(file);
 }
+

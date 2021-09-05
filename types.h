@@ -1,3 +1,6 @@
+#ifndef TYPES_H
+#define TYPES_H
+
 typedef enum
 {
 	CONNECTED,
@@ -40,3 +43,4 @@ typedef struct
 	dib_t		dib;
 } bitmap_t;
 #pragma pack(pop)
+#endif

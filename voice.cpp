@@ -2,12 +2,14 @@
 #include "voice.h"
 #include <winsock.h> 
 #include "queue.h"
+#include "sock.h"
 
 queue_t snd_squeue;
 queue_t snd_rqueue;
 
 unsigned char snd_rbuffer[SEGMENT_SIZE * 5];
 unsigned char snd_sbuffer[SEGMENT_SIZE * 5];
+
 
 Voice::Voice()
 {
@@ -122,7 +124,7 @@ int Voice::decode(unsigned char *data, int compressed_size, unsigned short *pcm,
 	return frame_size;
 }
 
-int Voice::voice_send(Audio &audio, int &sock)
+int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 {
 	static int pong = 0;
 	static bool buffers_full = false; // first time around buffers are empty, different logic required
@@ -205,7 +207,31 @@ int Voice::voice_send(Audio &audio, int &sock)
 	{
 		int dsize = dequeue(&snd_squeue, &snd_sbuffer[0], snd_squeue.size);
 
-		int sent = send(sock, (char *)&snd_sbuffer[0], dsize, 0);
+//		int sent = send(sock, (char *)&snd_sbuffer[0], dsize, 0);
+		int sent = socket_sendto(sock, (char *)&snd_sbuffer[0], dsize, ip, port);
+		if (sent == -1)
+		{
+
+			int ret = WSAGetLastError();
+
+			switch (ret)
+			{
+			case WSAEHOSTUNREACH:
+				printf("Fatal Error: router sent ICMP packet (destination unreachable)\n");
+				break;
+			case WSAEWOULDBLOCK:
+				printf("Would block, using select()\r\n");
+				return 0;
+			case WSAENETUNREACH:
+				printf("network unreachable\r\n");
+				break;
+			default:
+				printf("Fatal Error: %d\n", ret);
+				break;
+			}
+
+		}
+
 		if (sent > 0 && sent < dsize)
 		{
 			enqueue_front(&snd_squeue, &snd_sbuffer[sent], dsize - sent);
@@ -232,7 +258,7 @@ int Voice::voice_send(Audio &audio, int &sock)
 	return 0;
 }
 
-int Voice::voice_recv(Audio &audio, int &sock)
+int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 {
 	unsigned int pcm_size;
 	int ret = 1;
@@ -245,9 +271,12 @@ int Voice::voice_recv(Audio &audio, int &sock)
 	static voicemsg_t msg;
 
 	// recv any data on socket and add to rqueue
-	while (ret > 0 && sock != -1)
+	while (ret > 0)
 	{
-		ret = recv(sock, (char *)&snd_rbuffer[0], SEGMENT_SIZE, 0);
+		char client[MAX_PATH];
+
+		strncpy(client, ip, MAX_PATH - 1);
+		ret = socket_recvfrom(sock, (char *)&snd_rbuffer[0], SEGMENT_SIZE, client, port, MAX_PATH);
 		if (ret > 0)
 		{
 			enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
@@ -301,7 +330,7 @@ int Voice::voice_recv(Audio &audio, int &sock)
 				// decode opus data
 
 				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], SEGMENT_SIZE);
-				printf("PCM decode msg.size %d pcm_size %d\r\n", msg.size, pcm_size);
+				//printf("PCM decode msg.size %d pcm_size %d\r\n", msg.size, pcm_size);
 
 				if (buffers_full)
 				{

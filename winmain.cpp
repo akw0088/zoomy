@@ -13,6 +13,8 @@
 #include "queue.h"
 #include "types.h"
 
+#include "sock.h"
+
 // defines
 #define WMU_CAPTURE WM_USER + 1
 #define WIDTH 320
@@ -33,7 +35,7 @@ int connect_socket(char *ip_addr, unsigned short port, int &sock);
 void RedirectIOToConsole(int debug);
 char *inet_ntop(int af, const void *src, char *dst, socklen_t size);
 int set_sock_options(int sock);
-void handle_listen(int &sock, int &csock);
+void handle_listen(int &sock, int &csock, char *ipstr);
 void getBitmapFromWindow(HWND hwnd, int startx, int starty, int width, int height, unsigned char *data);
 
 
@@ -124,6 +126,12 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static int listen_port = 65535;
 	static int connect_port = 65534;
 	static char connect_ip[MAX_PATH] = "127.0.0.1";
+	static char listen_ip[MAX_PATH] = "127.0.0.1";
+	static char client_ip[MAX_PATH] = "";
+	static int udp_connect = -1;
+	static int udp_listen = -1;
+	static int udp_port_connect = 65533;
+	static int udp_port_listen = 65532;
 	static Audio audio;
 	static Voice voice;
 	static bool enable_voice = false;
@@ -147,7 +155,10 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		listen_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("listen"), 65535, path);
 		connect_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("connect"), 65534, path);
+		udp_port_connect = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_connect"), 65533, path);
+		udp_port_listen = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_listen"), 65532, path);
 		GetPrivateProfileString(TEXT("zoomy"), TEXT("ip"), "127.0.0.1", connect_ip, MAX_PATH, path);
+		GetPrivateProfileString(TEXT("zoomy"), TEXT("localip"), "127.0.0.1", listen_ip, MAX_PATH, path);
 		capture = GetPrivateProfileInt(TEXT("zoomy"), TEXT("capture"), 1, path);
 
 
@@ -201,6 +212,9 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		listen_socket(server_sock, listen_port);
 		set_sock_options(server_sock);
 
+		socket_connect(udp_connect, connect_ip, udp_port_connect);
+		socket_bind(udp_listen, NULL, udp_port_listen);
+
 		break;
 	}
 	case WM_KEYDOWN:
@@ -220,7 +234,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (connect_state == CONNECTED && enable_voice)
 		{
-			int ret = voice.voice_recv(audio, connect_sframe_rvoice_sock);
+			int ret = voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
 			if (ret == -1)
 			{
 				connect_state = DISCONNECTED;
@@ -229,7 +243,15 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 
 		if (client_svoice_rframe_sock == SOCKET_ERROR)
-			handle_listen(server_sock, client_svoice_rframe_sock);
+		{
+			handle_listen(server_sock, client_svoice_rframe_sock, client_ip);
+
+			static bool once = false;
+			if (once == false)
+			{
+				once = true;
+			}
+		}
 		else
 			handle_accepted(client_svoice_rframe_sock, (char *)rbuffer, rsize);
 
@@ -239,8 +261,6 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 			yuy2_to_rgb(rbuffer, (COLORREF *)recv_image);
 			InvalidateRect(hwnd, &client_area, FALSE);
-			static int i = 0;
-			printf("Showing frame %d\r\n", i++);
 		}
 
 		while (squeue.size >= FRAME_SIZE / 2 && connect_sframe_rvoice_sock != SOCKET_ERROR)
@@ -272,7 +292,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (enable_voice)
 		{
-			voice.voice_send(audio, client_svoice_rframe_sock);
+			voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
 		}
 
 		// Old way of getting frame RGB from window
@@ -415,6 +435,18 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			enable_voice
 		);
 		TextOut(hdc, 50, 500, state, strlen(state));
+
+		sprintf(state, "UDP Connect socket %d, port=%d. UDP client socket %d, port=%d, ip %s local %s client %s",
+			udp_connect,
+			udp_port_connect,
+			udp_listen,
+			udp_port_listen,
+			connect_ip,
+			listen_ip,
+			client_ip
+		);
+		TextOut(hdc, 50, 550, state, strlen(state));
+
 
 		EndPaint(hwnd, &ps);
 		return 0;
@@ -599,7 +631,7 @@ int connect_socket(char *ip_addr, unsigned short port, int &sock)
 	return -1;
 }
 
-void handle_listen(int &sock, int &csock)
+void handle_listen(int &sock, int &csock, char *ipstr)
 {
 	struct sockaddr_in csockaddr;
 	int addrlen = sizeof(sockaddr);
@@ -607,8 +639,6 @@ void handle_listen(int &sock, int &csock)
 	csock = accept(sock, (sockaddr *)&csockaddr, &addrlen);
 	if (csock != -1)
 	{
-		char ipstr[MAX_PATH] = { 0 };
-
 		inet_ntop(AF_INET, &(csockaddr.sin_addr), ipstr, MAX_PATH);
 		printf("Accepted connection from %s\n", ipstr);
 		set_sock_options(csock);
@@ -719,8 +749,6 @@ LRESULT frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr)
 		// prevent duplicate frames
 		if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
 		{
-			static int i = 0;
-			printf("Sending Frame %d\r\n", i++);
 			enqueue(&squeue, lpVHdr->lpData, lpVHdr->dwBytesUsed);
 			memcpy(cap_image_last, lpVHdr->lpData, lpVHdr->dwBytesUsed);
 		}
