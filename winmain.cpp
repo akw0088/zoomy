@@ -24,12 +24,12 @@
 
 // prototypes
 LRESULT CALLBACK WinProc(HWND, UINT, WPARAM, LPARAM);
-int listen_sock(int &sock, unsigned short port);
+int listen_socket(int &sock, unsigned short port);
 LRESULT frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr);
 void yuy2_to_rgb(unsigned char *yuvData, COLORREF *data);
 void draw_pixels(HDC hdc, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data);
 void handle_accepted(int &csock, char *buffer, int &size);
-int connect_sock(char *ip_addr, unsigned short port, int &osock);
+int connect_socket(char *ip_addr, unsigned short port, int &sock);
 void RedirectIOToConsole(int debug);
 char *inet_ntop(int af, const void *src, char *dst, socklen_t size);
 int set_sock_options(int sock);
@@ -54,7 +54,7 @@ unsigned char cap_image[FRAME_SIZE];
 unsigned char cap_image_last[FRAME_SIZE];
 
 // Used by callback (only has hwnd and data pointer, might reference by hwnd somehow later)
-static int sock = -1;
+static int connect_sframe_rvoice_sock = -1;
 static int capture = 1;
 
 
@@ -116,15 +116,17 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static HWND		camhwnd = NULL;
 	static RECT		client_area;
 	static bool init = false;
-	static int lsock = -1;
-	static int csock = -1;
+	static int server_sock = -1;	// listen socket
+	static int client_svoice_rframe_sock = -1;	// client socket from listen
+
 	static client_state_t connect_state;
-	static client_state_t listen_state;
+	static client_state_t client_state;
 	static int listen_port = 65535;
 	static int connect_port = 65534;
 	static char connect_ip[MAX_PATH] = "127.0.0.1";
 	static Audio audio;
 	static Voice voice;
+	static bool enable_voice = false;
 
 	switch (message)
 	{
@@ -196,11 +198,19 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 
 
-		listen_sock(lsock, listen_port);
-		set_sock_options(lsock);
+		listen_socket(server_sock, listen_port);
+		set_sock_options(server_sock);
 
 		break;
 	}
+	case WM_KEYDOWN:
+		switch (wParam)
+		{
+		case VK_SPACE:
+			enable_voice = !enable_voice;
+			break;
+		}
+		break;
 	case WMU_CAPTURE:
 	{
 		int rsize = 0;
@@ -208,27 +218,20 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-		if (sock != SOCKET_ERROR)
+		if (connect_state == CONNECTED && enable_voice)
 		{
-			voice.voice_recv(audio, sock);
+			int ret = voice.voice_recv(audio, connect_sframe_rvoice_sock);
+			if (ret == -1)
+			{
+				connect_state = DISCONNECTED;
+			}
 		}
 
 
-		if (csock == SOCKET_ERROR)
-			handle_listen(lsock, csock);
+		if (client_svoice_rframe_sock == SOCKET_ERROR)
+			handle_listen(server_sock, client_svoice_rframe_sock);
 		else
-			handle_accepted(csock, (char *)rbuffer, rsize);
-
-		if (rsize == SOCKET_ERROR)
-		{
-			csock = SOCKET_ERROR;
-			memset(&rqueue, 0, sizeof(queue_t));
-		}
-		else if (rsize > 0)
-		{
-			// add data to circular queue
-			enqueue(&rqueue, rbuffer, rsize);
-		}
+			handle_accepted(client_svoice_rframe_sock, (char *)rbuffer, rsize);
 
 		while (rqueue.size >= FRAME_SIZE / 2)
 		{
@@ -240,10 +243,10 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			printf("Showing frame %d\r\n", i++);
 		}
 
-		while (squeue.size >= FRAME_SIZE / 2)
+		while (squeue.size >= FRAME_SIZE / 2 && connect_sframe_rvoice_sock != SOCKET_ERROR)
 		{
 			dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
-			int ret = send(sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
+			int ret = send(connect_sframe_rvoice_sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
 			if (ret == -1)
 			{
 				int err = WSAGetLastError();
@@ -251,7 +254,9 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				if (err != WSAEWOULDBLOCK)
 				{
 					printf("send returned -1 error %d\r\n", err);
-					sock = SOCKET_ERROR;
+					connect_state = DISCONNECTED;
+					closesocket(connect_sframe_rvoice_sock);
+					connect_sframe_rvoice_sock = -1;
 				}
 				break;
 			}
@@ -265,9 +270,9 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 
 
-		if (csock != SOCKET_ERROR)
+		if (enable_voice)
 		{
-			voice.voice_send(audio, csock);
+			voice.voice_send(audio, client_svoice_rframe_sock);
 		}
 
 		// Old way of getting frame RGB from window
@@ -289,7 +294,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 #endif
 
-		if (sock != SOCKET_ERROR && capture == 0)
+		if (connect_sframe_rvoice_sock != SOCKET_ERROR && capture == 0)
 		{
 			static int i = 0;
 			// send checkerbox
@@ -309,26 +314,29 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
-		if (sock == SOCKET_ERROR)
+		if (connect_sframe_rvoice_sock == -1 || connect_state == DISCONNECTED)
 		{
-			connect_state = DISCONNECTED;
-			//memcpy(recv_image, red_check, FRAME_SIZE);
-			InvalidateRect(hwnd, &client_area, FALSE);
-			connect_sock(connect_ip, connect_port, sock);
-		}
-		else
-		{
-			connect_state = CONNECTED;
+			int ret = connect_socket(connect_ip, connect_port, connect_sframe_rvoice_sock);
+			if (ret == 0)
+			{
+				connect_state = CONNECTED;
+			}
+			else
+			{
+				//				memset(&rqueue, 0, sizeof(queue_t));
+				connect_state = DISCONNECTED;
+			}
 		}
 
-		if (csock == SOCKET_ERROR)
+		if (client_svoice_rframe_sock == SOCKET_ERROR)
 		{
-			enqueue(&rqueue, red_check, FRAME_SIZE);
-			listen_state = DISCONNECTED;
+			// add check box to rqueue to show on remote side, note redish hue now to YUYV format
+			//enqueue(&rqueue, red_check, FRAME_SIZE);
+			client_state = DISCONNECTED;
 		}
 		else
 		{
-			listen_state = CONNECTED;
+			client_state = CONNECTED;
 		}
 
 		break;
@@ -397,6 +405,17 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			draw_pixels(hdc, 0, 0, WIDTH, HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT, cap_image);
 		}
 
+		char state[MAX_PATH];
+
+		sprintf(state, "Connect socket %d, connected=%d. client socket %d, connected=%d voice enable=%d (space)",
+			connect_sframe_rvoice_sock,
+			connect_state == CONNECTED,
+			client_svoice_rframe_sock,
+			client_state == CONNECTED,
+			enable_voice
+		);
+		TextOut(hdc, 50, 500, state, strlen(state));
+
 		EndPaint(hwnd, &ps);
 		return 0;
 	}
@@ -417,7 +436,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 }
 
 
-int listen_sock(int &sock, unsigned short port)
+int listen_socket(int &sock, unsigned short port)
 {
 	struct sockaddr_in	servaddr;
 
@@ -470,11 +489,10 @@ int set_sock_options(int sock)
 }
 
 
-int connect_sock(char *ip_addr, unsigned short port, int &osock)
+int connect_socket(char *ip_addr, unsigned short port, int &sock)
 {
 	struct sockaddr_in	servaddr;
 	int ret;
-	static int sock = -1;
 
 	if (sock == -1)
 	{
@@ -507,7 +525,7 @@ int connect_sock(char *ip_addr, unsigned short port, int &osock)
 				break;
 			case WSAEWOULDBLOCK:
 				printf("Would block, using select()\r\n");
-				return 0;
+				return -1;
 			default:
 				printf("Fatal Error: %d\n", ret);
 				break;
@@ -516,10 +534,7 @@ int connect_sock(char *ip_addr, unsigned short port, int &osock)
 			return -1;
 		}
 
-		osock = sock;
-		sock = -1;
 		printf("TCP handshake completed with %s\n", ip_addr);
-
 		return 0;
 	}
 	else
@@ -535,25 +550,26 @@ int connect_sock(char *ip_addr, unsigned short port, int &osock)
 		FD_SET(sock, &write_set);
 
 		timeout.tv_sec = 0;
-		timeout.tv_usec = 200000;
+		timeout.tv_usec = 1;
 
 		int ret = select(sock + 1, &read_set, &write_set, NULL, &timeout);
 		if (ret < 0)
 		{
 			printf("select() failed ");
-			return 0;
+			return -1;
 		}
 		else if (ret == 0)
 		{
 			static int count = 0;
-			printf("timed out\r\n");
+			printf("select() timed out\r\n");
 			count++;
 
-			if (count == 5)
+			if (count == 5 * (200000))
 			{
+				closesocket(sock);
 				sock = -1;
 			}
-			return 0;
+			return -1;
 		}
 
 		if (FD_ISSET(sock, &read_set) || FD_ISSET(sock, &write_set))
@@ -568,14 +584,19 @@ int connect_sock(char *ip_addr, unsigned short port, int &osock)
 
 			if (err == 0)
 			{
-				osock = sock;
-				sock = -1;
 				printf("TCP handshake completed with %s\n", ip_addr);
+				return 0;
 			}
+			else
+			{
+				closesocket(sock);
+				sock = -1;
+			}
+
 		}
 	}
 
-	return 0;
+	return -1;
 }
 
 void handle_listen(int &sock, int &csock)
@@ -586,8 +607,9 @@ void handle_listen(int &sock, int &csock)
 	csock = accept(sock, (sockaddr *)&csockaddr, &addrlen);
 	if (csock != -1)
 	{
-		char ipstr[80] = { 0 };
-		inet_ntop(AF_INET, &(csockaddr.sin_addr), ipstr, 80);
+		char ipstr[MAX_PATH] = { 0 };
+
+		inet_ntop(AF_INET, &(csockaddr.sin_addr), ipstr, MAX_PATH);
 		printf("Accepted connection from %s\n", ipstr);
 		set_sock_options(csock);
 	}
@@ -599,33 +621,46 @@ void handle_accepted(int &csock, char *buffer, int &size)
 	if (csock == -1)
 		return;
 
-	size = recv(csock, buffer, FRAME_SIZE, 0);
-	if (size == -1)
+	while (1)
 	{
-		int ret = WSAGetLastError();
-
-		if (ret == WSAEWOULDBLOCK)
+		size = recv(csock, buffer, FRAME_SIZE / 2 + sizeof(int), 0);
+		if (size > 0)
 		{
-			size = 0;
-			return;
+			// add data to circular queue
+			enqueue(&rqueue, rbuffer, size);
 		}
-
-		switch (ret)
+		else if (size == 0)
 		{
-		case WSAETIMEDOUT:
-			break;
-		case WSAECONNREFUSED:
-			break;
-		case WSAEHOSTUNREACH:
-			break;
-		default:
-			printf("Fatal Error: %d\n", ret);
 			break;
 		}
+		else if (size < 0)
+		{
+			int ret = WSAGetLastError();
 
-		csock = -1;
+			if (ret == WSAEWOULDBLOCK)
+			{
+				size = 0;
+				return;
+			}
+
+			switch (ret)
+			{
+			case WSAETIMEDOUT:
+				break;
+			case WSAECONNREFUSED:
+				break;
+			case WSAEHOSTUNREACH:
+				break;
+			default:
+				printf("Fatal Error: %d\n", ret);
+				break;
+			}
+
+			csock = -1;
+			csock = SOCKET_ERROR;
+			break;
+		}
 	}
-
 }
 
 void draw_pixels(HDC hdc, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data)
@@ -679,7 +714,7 @@ void yuy2_to_rgb(unsigned char *yuvData, COLORREF *data)
 // Note: lpVHdr has YUY2 data not RGB
 LRESULT frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr)
 {
-	if (sock != SOCKET_ERROR && capture)
+	if (connect_sframe_rvoice_sock != SOCKET_ERROR && capture)
 	{
 		// prevent duplicate frames
 		if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)

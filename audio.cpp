@@ -104,6 +104,8 @@ void Audio::init()
 	// 1 unit = 0.3 / 8 meters
 //	alListenerf(AL_METERS_PER_UNIT, 0.375f);
 
+	float zero[3] = { 0.0 };
+	listener_position(zero);
 #endif
 }
 
