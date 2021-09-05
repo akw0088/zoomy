@@ -53,7 +53,6 @@ void Audio::init()
 		return;
 	}
 
-
     context = alcCreateContext(device, NULL);
 
 	if (context == NULL)
@@ -343,10 +342,10 @@ void Audio::capture_start()
 	alcCaptureStart(microphone);
 }
 
-void Audio::capture_sample(unsigned short *pcm, int &size)
+int Audio::capture_sample(unsigned short *pcm, int &size)
 {
 	if (microphone == NULL)
-		return;
+		return -1;
 
 	static int max_recv = 0;
 
@@ -360,7 +359,7 @@ void Audio::capture_sample(unsigned short *pcm, int &size)
 	{
 		// if we have less than one packet, leave it in the buffer
 		size = 0;
-		return;
+		return 0;
 	}
 
 	alcCaptureSamples(microphone, pcm, size);
@@ -369,7 +368,7 @@ void Audio::capture_sample(unsigned short *pcm, int &size)
 	{
 		max_recv = size;
 	}
-
+	return size;
 }
 
 

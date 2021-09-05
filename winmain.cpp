@@ -353,6 +353,8 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		if (init == false)
 			return 0;
 
+		// Ensure we update textout
+		InvalidateRect(hwnd, &client_area, FALSE);
 
 		if (connect_sframe_rvoice_sock == -1 || connect_state == DISCONNECTED)
 		{
@@ -388,8 +390,11 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		width = LOWORD(lParam);
 		height = HIWORD(lParam);
 
-		if (capture)
+		static bool once = false;
+
+		if (capture && once == false)
 		{
+			once = true;
 			// setup frame rate
 			//			CAPTUREPARMS CaptureParms;
 			//			float FramesPerSec = 30.0; // 30 frames per second
@@ -512,22 +517,25 @@ int set_sock_options(int sock)
 
 	getsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, &arglen);
 	printf("SO_SNDBUF = %d\n", sndbuf);
+	if (sndbuf < 65507)
+	{
+		sndbuf = 65507; //default 8192
+		setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, sizeof(sndbuf));
+		printf("Setting SO_SNDBUF to %d\n", sndbuf);
+		getsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, &arglen);
+		printf("SO_SNDBUF = %d\n", sndbuf);
+	}
 
 	getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, &arglen);
 	printf("SO_RCVBUF = %d\n", rcvbuf);
-
-	sndbuf = 65507; //default 8192
-	setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, sizeof(sndbuf));
-	printf("Setting SO_SNDBUF to %d\n", sndbuf);
-	getsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, &arglen);
-	printf("SO_SNDBUF = %d\n", sndbuf);
-
-	rcvbuf = 65507; //default 8192
-	setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, sizeof(rcvbuf));
-	printf("Setting SO_RCVBUF to %d\n", rcvbuf);
-	getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, &arglen);
-	printf("SO_RCVBUF = %d\n", rcvbuf);
-
+	if (rcvbuf < 65507)
+	{
+		rcvbuf = 65507; //default 8192
+		setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, sizeof(rcvbuf));
+		printf("Setting SO_RCVBUF to %d\n", rcvbuf);
+		getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, &arglen);
+		printf("SO_RCVBUF = %d\n", rcvbuf);
+	}
 
 
 	int flag = 1;

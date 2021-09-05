@@ -226,7 +226,7 @@ int socket_connect(int &sockfd, const char *server, int port)
 	getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, &arglen);
 	printf("SO_RCVBUF = %d\n", rcvbuf);
 
-	//	if (sndbuf < 8192)
+	if (sndbuf < 65507)
 	{
 		sndbuf = 65507;  //default 8192
 		setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, sizeof(sndbuf));
@@ -235,7 +235,7 @@ int socket_connect(int &sockfd, const char *server, int port)
 		printf("SO_SNDBUF = %d\n", sndbuf);
 	}
 
-	//	if (rcvbuf < 8192)
+	if (rcvbuf < 65507)
 	{
 		rcvbuf = 65507; //default 8192
 		setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, sizeof(rcvbuf));

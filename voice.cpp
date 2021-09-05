@@ -20,10 +20,6 @@ int Voice::init(Audio &audio)
 
 #ifdef VOICECHAT
 #ifndef DEDICATED
-	if (audio.microphone == NULL)
-	{
-		return -1;
-	}
 
 
 	int ret;
@@ -178,7 +174,13 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 	else
 	{
 		pcm_size = SEGMENT_SIZE;
-		audio.capture_sample(mic_pcm[pong], pcm_size);
+		int ret = audio.capture_sample(mic_pcm[pong], pcm_size);
+		if (ret == 0)
+		{
+			// microphone doesnt have enough data, take a break thread
+			Sleep(0);
+		}
+
 		if (local_echo)
 		{
 			alBufferData(mic_buffer[pong], VOICE_FORMAT, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
@@ -283,7 +285,7 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 	static voicemsg_t msg;
 
 	// recv any data on socket and add to rqueue
-	while (ret > 0)
+	do
 	{
 		char client[MAX_PATH];
 
@@ -303,33 +305,10 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 				return -1;
 			}
 		}
-	}
+	} while (ret > 0);
 
-	if (remote_echo)
-	{
 
-#ifndef DEDICATED
-		if (buffers_full)
-		{
-			alGetSourcei(decode_source, AL_BUFFERS_PROCESSED, &buffersProcessed);
-			if (buffersProcessed == 0)
-			{
-				ALenum state;
-
-				alGetSourcei(decode_source, AL_SOURCE_STATE, &state);
-
-				if (state == AL_STOPPED)
-				{
-					audio.play(decode_source);
-				}
-				return 0;
-			}
-
-		}
-#endif
-	}
-
-	// check queue for a sound segment
+	// check queue for a sound segment and add it to sound buffer chain
 	while (snd_rqueue.size > 0)
 	{
 		dequeue_peek(&snd_rqueue, (unsigned char *)&msg, VOICE_HEADER);
@@ -344,10 +323,10 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], SEGMENT_SIZE);
 				printf("PCM decode msg.size %d pcm_size %d sequence %d\r\n", msg.size, pcm_size, msg.sequence);
 
-				static int last_sequence = 0;
+				static unsigned int last_sequence = 0;
 				if (msg.sequence < last_sequence)
 				{
-					printf("out of sequence, dropping\r\n");
+					printf("out of sequence %d < %d, dropping\r\n", msg.sequence, last_sequence);
 					return 0;
 				}
 				last_sequence = msg.sequence;
@@ -372,6 +351,7 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 
 					if (buffers_full == false)
 					{
+						// now that we have some sound queued up we can start playing
 						buffers_full = true;
 						audio.play(decode_source);
 					}
@@ -380,9 +360,39 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 		}
 		else
 		{
-			memset(&snd_rqueue, 0, sizeof(queue_t));
-			break;
+			// Either bad data or not enough data
+			if (msg.magic != 1337)
+			{
+				// unexpected data, throw away four bytes and try again
+				dequeue(&snd_rqueue, (unsigned char *)&msg, 4);
+				printf("Unexpected data, throwing away 4 bytes from rqueue\r\n");
+			}
 		}
+	}
+
+	// Check if we have any queued sound buffers to play
+	if (remote_echo)
+	{
+
+#ifndef DEDICATED
+		if (buffers_full)
+		{
+			alGetSourcei(decode_source, AL_BUFFERS_PROCESSED, &buffersProcessed);
+			if (buffersProcessed == 0)
+			{
+				ALenum state;
+
+				alGetSourcei(decode_source, AL_SOURCE_STATE, &state);
+
+				if (state == AL_STOPPED)
+				{
+					// if we stopped due to a data hiccup, start playing again
+					audio.play(decode_source);
+				}
+				return 0;
+			}
+		}
+#endif
 	}
 
 	return 0;
