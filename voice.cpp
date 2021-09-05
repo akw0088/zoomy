@@ -177,6 +177,7 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 	}
 	else
 	{
+		pcm_size = SEGMENT_SIZE;
 		audio.capture_sample(mic_pcm[pong], pcm_size);
 		if (local_echo)
 		{
@@ -198,20 +199,31 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 	int num_bytes = 0;
 	encode(mic_pcm[pong], pcm_size, msg.data, num_bytes);
 
+	static int seq = 0;
 	msg.magic = 1337;
+	msg.sequence = seq++;
 	msg.size = num_bytes + VOICE_HEADER;
 
 	enqueue(&snd_squeue, (unsigned char *)&msg, msg.size);
 
 	while (snd_squeue.size > 0 && sock != -1)
 	{
-		int dsize = dequeue(&snd_squeue, &snd_sbuffer[0], snd_squeue.size);
+		int dsize = dequeue_peek(&snd_squeue, &snd_sbuffer[0], VOICE_HEADER);
+		voicemsg_t *head = (voicemsg_t *)&snd_sbuffer[0];
+		if (head->magic == 1337)
+		{
+			dsize = dequeue(&snd_squeue, &snd_sbuffer[0], head->size);
+		}
+		else
+		{
+			// missing header, drop 4 bytes and try again
+			dsize = dequeue(&snd_squeue, &snd_sbuffer[0], 4);
+			continue;
+		}
 
-//		int sent = send(sock, (char *)&snd_sbuffer[0], dsize, 0);
 		int sent = socket_sendto(sock, (char *)&snd_sbuffer[0], dsize, ip, port);
 		if (sent == -1)
 		{
-
 			int ret = WSAGetLastError();
 
 			switch (ret)
@@ -330,7 +342,16 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 				// decode opus data
 
 				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], SEGMENT_SIZE);
-				//printf("PCM decode msg.size %d pcm_size %d\r\n", msg.size, pcm_size);
+				printf("PCM decode msg.size %d pcm_size %d sequence %d\r\n", msg.size, pcm_size, msg.sequence);
+
+				static int last_sequence = 0;
+				if (msg.sequence < last_sequence)
+				{
+					printf("out of sequence, dropping\r\n");
+					return 0;
+				}
+				last_sequence = msg.sequence;
+
 
 				if (buffers_full)
 				{

@@ -58,7 +58,51 @@ unsigned char cap_image_last[FRAME_SIZE];
 // Used by callback (only has hwnd and data pointer, might reference by hwnd somehow later)
 static int connect_sframe_rvoice_sock = -1;
 static int capture = 1;
+static bool enable_voice = false;
 
+
+DWORD WINAPI VoiceThread(LPVOID lpParam)
+{
+	static Audio audio;
+	static Voice voice;
+	static int udp_connect = -1;
+	static int udp_listen = -1;
+	static int udp_port_connect = 65533;
+	static int udp_port_listen = 65532;
+	static char connect_ip[MAX_PATH] = "127.0.0.1";
+	static char listen_ip[MAX_PATH] = "127.0.0.1";
+
+	char path[MAX_PATH] = { 0 };
+	GetCurrentDirectory(MAX_PATH, path);
+	lstrcat(path, TEXT("\\zoomy.ini"));
+
+
+	udp_port_connect = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_connect"), 65533, path);
+	udp_port_listen = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_listen"), 65532, path);
+	GetPrivateProfileString(TEXT("zoomy"), TEXT("ip"), "127.0.0.1", connect_ip, MAX_PATH, path);
+	GetPrivateProfileString(TEXT("zoomy"), TEXT("localip"), "127.0.0.1", listen_ip, MAX_PATH, path);
+
+
+	socket_connect(udp_connect, connect_ip, udp_port_connect);
+	socket_bind(udp_listen, NULL, udp_port_listen);
+
+
+	audio.init();
+	voice.init(audio);
+	audio.capture_start();
+
+	while (1)
+	{
+		if (enable_voice)
+		{
+			voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
+			voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
+		}
+	}
+
+
+	return 0;
+}
 
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -128,21 +172,14 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static char connect_ip[MAX_PATH] = "127.0.0.1";
 	static char listen_ip[MAX_PATH] = "127.0.0.1";
 	static char client_ip[MAX_PATH] = "";
-	static int udp_connect = -1;
-	static int udp_listen = -1;
-	static int udp_port_connect = 65533;
-	static int udp_port_listen = 65532;
-	static Audio audio;
-	static Voice voice;
-	static bool enable_voice = false;
+	void *voice_data = NULL;
+	HANDLE hThread;
 
 	switch (message)
 	{
 	case WM_CREATE:
 	{
-		audio.init();
-		voice.init(audio);
-		audio.capture_start();
+
 		WSAStartup(MAKEWORD(2, 0), &WSAData);
 		RedirectIOToConsole(true);
 		GetClientRect(hwnd, &client_area);
@@ -155,8 +192,6 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		listen_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("listen"), 65535, path);
 		connect_port = GetPrivateProfileInt(TEXT("zoomy"), TEXT("connect"), 65534, path);
-		udp_port_connect = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_connect"), 65533, path);
-		udp_port_listen = GetPrivateProfileInt(TEXT("zoomy"), TEXT("udp_listen"), 65532, path);
 		GetPrivateProfileString(TEXT("zoomy"), TEXT("ip"), "127.0.0.1", connect_ip, MAX_PATH, path);
 		GetPrivateProfileString(TEXT("zoomy"), TEXT("localip"), "127.0.0.1", listen_ip, MAX_PATH, path);
 		capture = GetPrivateProfileInt(TEXT("zoomy"), TEXT("capture"), 1, path);
@@ -212,9 +247,8 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		listen_socket(server_sock, listen_port);
 		set_sock_options(server_sock);
 
-		socket_connect(udp_connect, connect_ip, udp_port_connect);
-		socket_bind(udp_listen, NULL, udp_port_listen);
 
+		hThread = CreateThread(NULL, 0, VoiceThread, &voice_data, 0, NULL);
 		break;
 	}
 	case WM_KEYDOWN:
@@ -231,15 +265,6 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		if (init == false)
 			return 0;
-
-		if (connect_state == CONNECTED && enable_voice)
-		{
-			int ret = voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
-			if (ret == -1)
-			{
-				connect_state = DISCONNECTED;
-			}
-		}
 
 
 		if (client_svoice_rframe_sock == SOCKET_ERROR)
@@ -289,12 +314,6 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		}
 
-
-		if (enable_voice)
-		{
-			voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
-		}
-
 		// Old way of getting frame RGB from window
 		// Using RAW YUY2 means half the size using callback
 #if 0
@@ -333,6 +352,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		// Dont attempt anything until video is streaming
 		if (init == false)
 			return 0;
+
 
 		if (connect_sframe_rvoice_sock == -1 || connect_state == DISCONNECTED)
 		{
@@ -436,11 +456,7 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		);
 		TextOut(hdc, 50, 500, state, strlen(state));
 
-		sprintf(state, "UDP Connect socket %d, port=%d. UDP client socket %d, port=%d, ip %s local %s client %s",
-			udp_connect,
-			udp_port_connect,
-			udp_listen,
-			udp_port_listen,
+		sprintf(state, "ip %s local %s client %s",
 			connect_ip,
 			listen_ip,
 			client_ip
@@ -582,7 +598,7 @@ int connect_socket(char *ip_addr, unsigned short port, int &sock)
 		FD_SET(sock, &write_set);
 
 		timeout.tv_sec = 0;
-		timeout.tv_usec = 1;
+		timeout.tv_usec = 0;
 
 		int ret = select(sock + 1, &read_set, &write_set, NULL, &timeout);
 		if (ret < 0)

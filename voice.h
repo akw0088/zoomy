@@ -15,7 +15,8 @@ typedef struct
 {
 	unsigned int magic;
 	unsigned int size;
-	unsigned char data[8192];
+	unsigned int sequence;
+	unsigned char data[2048];
 } voicemsg_t;
 
 typedef struct
