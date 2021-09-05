@@ -40,7 +40,7 @@ public:
 	int init(Audio &audio);
 	void destroy();
 	int encode(unsigned short *pcm, unsigned int size, unsigned char *data, int &num_bytes);
-	int decode(unsigned char *data, int compressed_size, unsigned short *pcm, unsigned int &size);
+	int decode(unsigned char *data, int compressed_size, unsigned short *pcm, unsigned int max_size);
 	int voice_send(Audio &audio, int &sock);
 	int voice_recv(Audio &audio, int &sock);
 
