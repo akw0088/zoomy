@@ -58,7 +58,7 @@ private:
 	unsigned short int		voice_recv_sequence;
 
 
-#define NUM_PONG 2
+#define NUM_PONG 8
 	unsigned int mic_buffer[NUM_PONG];
 	unsigned int mic_source;
 	unsigned short mic_pcm[NUM_PONG][MIC_BUFFER_SIZE];

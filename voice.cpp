@@ -45,7 +45,7 @@ int Voice::init(Audio &audio)
 	}
 
 
-	int complexity = 0;
+	int complexity = 10;
 
 	ret = opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(complexity));
 	if (ret < 0)
@@ -91,14 +91,16 @@ int Voice::decode(unsigned char *data, int compressed_size, unsigned short *pcm,
 {
 	int frame_size;
 
-	frame_size = opus_decode(decoder, data, compressed_size, (opus_int16 *)pcm, (max_size >> 1), 0);
+//	alBufferData(uiBuffer, AL_FORMAT_MONO16, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
+
+	frame_size = opus_decode(decoder, data, compressed_size, (opus_int16 *)pcm, (max_size), 0);
 	if (frame_size < 0)
 	{
 		printf("decoder failed: %s\n", opus_strerror(frame_size));
 		return -1;
 	}
 
-	return frame_size;
+	return frame_size * 2;
 }
 
 int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)

@@ -409,7 +409,6 @@ DWORD WINAPI Zoomy::VoiceThread(LPVOID lpParam)
 		{
 			voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
 			voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
-			voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
 		}
 	}
 
@@ -680,7 +679,6 @@ void Zoomy::read_socket(int &csock, char *buffer, int &size)
 
 
 
-#define RGB2(b,g,r)          ((COLORREF)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)))
 
 void Zoomy::yuy2_to_rgb(unsigned char *yuvData, COLORREF *data)
 {
