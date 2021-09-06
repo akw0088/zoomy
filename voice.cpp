@@ -178,7 +178,7 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 		if (ret == 0)
 		{
 			// microphone doesnt have enough data, take a break thread
-			Sleep(0);
+			//Sleep(0);
 		}
 
 		if (local_echo)
@@ -294,6 +294,9 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 		if (ret > 0)
 		{
 			enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
+
+			if (snd_rqueue.size > 1024)
+				break;
 		}
 		else if (ret == -1)
 		{
@@ -321,7 +324,16 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 				// decode opus data
 
 				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], SEGMENT_SIZE);
-				printf("PCM decode msg.size %d pcm_size %d sequence %d\r\n", msg.size, pcm_size, msg.sequence);
+
+				if (msg.sequence < 100)
+				{
+					printf("PCM decode msg.size %d pcm_size %d sequence %d\r\n", msg.size, pcm_size, msg.sequence);
+				}
+				else if (msg.sequence == 100)
+				{
+					printf("Got 100 packets, probably working\r\n");
+				}
+
 
 				static unsigned int last_sequence = 0;
 				if (msg.sequence < last_sequence)
@@ -366,6 +378,10 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 				// unexpected data, throw away four bytes and try again
 				dequeue(&snd_rqueue, (unsigned char *)&msg, 4);
 				printf("Unexpected data, throwing away 4 bytes from rqueue\r\n");
+			}
+			else
+			{
+				break;
 			}
 		}
 	}
