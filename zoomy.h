@@ -22,6 +22,9 @@
 #define HEIGHT 240
 #define FRAME_SIZE (WIDTH * HEIGHT * 4)
 
+
+#define FRAME_PACKET_SIZE (FRAME_SIZE / 2 + sizeof(header_t))
+
 // Scale it up for display
 #define DISPLAY_WIDTH 640
 #define DISPLAY_HEIGHT 480

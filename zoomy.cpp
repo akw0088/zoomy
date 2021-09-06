@@ -130,18 +130,33 @@ void Zoomy::capture()
 		enqueue(&rqueue, rbuffer, rsize);
 	}
 
-	while (rqueue.size >= FRAME_SIZE / 2)
+	while (rqueue.size >= FRAME_PACKET_SIZE)
 	{
-		dequeue(&rqueue, rbuffer, FRAME_SIZE / 2);
+		dequeue_peek(&rqueue, rbuffer, sizeof(header_t));
 
-		yuy2_to_rgb(rbuffer, (COLORREF *)recv_image);
-		InvalidateRect(hwnd, &client_area, FALSE);
+		header_t *header = (header_t *)rbuffer;
+
+		if (header->magic == 0xDEAFB4B3 && header->size == FRAME_SIZE / 2)
+		{
+			dequeue(&rqueue, rbuffer, FRAME_PACKET_SIZE);
+			yuy2_to_rgb(&rbuffer[sizeof(header_t)], (COLORREF *)recv_image);
+			InvalidateRect(hwnd, &client_area, FALSE);
+			Zoomy::enable_voice = true;
+		}
+		else
+		{
+			// drop 4 bytes and try again
+			dequeue(&rqueue, rbuffer, 4);
+			continue;
+		}
 	}
 
-	while (squeue.size >= FRAME_SIZE / 2 && connect_sframe_sock != SOCKET_ERROR && connect_state == CONNECTED)
+	while (squeue.size >= FRAME_PACKET_SIZE &&
+		connect_sframe_sock != SOCKET_ERROR &&
+		connect_state == CONNECTED)
 	{
-		dequeue(&squeue, sbuffer, FRAME_SIZE / 2);
-		int ret = send(connect_sframe_sock, (char *)sbuffer, FRAME_SIZE / 2, 0);
+		dequeue(&squeue, sbuffer, FRAME_PACKET_SIZE);
+		int ret = send(connect_sframe_sock, (char *)sbuffer, FRAME_PACKET_SIZE, 0);
 		if (ret == -1)
 		{
 			int err = WSAGetLastError();
@@ -165,10 +180,11 @@ void Zoomy::capture()
 			}
 			break;
 		}
-		else if (ret > 0 && ret < FRAME_SIZE / 2)
+		else if (ret > 0 && ret < FRAME_PACKET_SIZE)
 		{
 			// partial send occurred (full buffer?)
-			enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
+			// better to just drop the frame
+//			enqueue_front(&squeue, &sbuffer[ret], FRAME_SIZE / 2 - ret);
 		}
 
 
@@ -201,7 +217,13 @@ void Zoomy::capture()
 		if (i % 500 == 0)
 		{
 			printf("Sending checkbox %d\r\n", i++);
-			enqueue(&squeue, cap_image, FRAME_SIZE);
+
+			header_t header;
+
+			header.magic = 0xDEAFB4B3;
+			header.size = FRAME_SIZE / 2;
+			enqueue(&squeue, (unsigned char *)&header, sizeof(header_t));
+			enqueue(&squeue, cap_image, FRAME_SIZE / 2);
 		}
 	}
 
@@ -260,13 +282,6 @@ void Zoomy::resize(int width, int height)
 		//			CaptureParms.dwRequestMicroSecPerFrame = (DWORD)(1.0e6 / FramesPerSec);
 		//			capCaptureSetSetup(camhwnd, &CaptureParms, sizeof(CAPTUREPARMS));
 
-		// setup resolution
-		BITMAPINFO psVideoFormat;
-
-		capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
-		psVideoFormat.bmiHeader.biWidth = WIDTH;
-		psVideoFormat.bmiHeader.biHeight = HEIGHT;
-		capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
 
 
 		CAPDRIVERCAPS CapDrvCaps;
@@ -280,8 +295,19 @@ void Zoomy::resize(int width, int height)
 		capSetCallbackOnFrame(camhwnd, frameCallback);
 		SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 
-		SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
-		capDlgVideoCompression(camhwnd);
+
+		// setup resolution
+		BITMAPINFO psVideoFormat = { 0 };
+
+		capGetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+		psVideoFormat.bmiHeader.biWidth = WIDTH;
+		psVideoFormat.bmiHeader.biHeight = HEIGHT;
+		psVideoFormat.bmiHeader.biSizeImage = WIDTH * HEIGHT * 2;
+		capSetVideoFormat(camhwnd, &psVideoFormat, sizeof(psVideoFormat));
+
+
+//		SendMessage(camhwnd, WM_CAP_DLG_VIDEOFORMAT, 0, 0);
+//		capDlgVideoCompression(camhwnd);
 
 		SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
 		SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 16, 0);
@@ -315,14 +341,14 @@ void Zoomy::paint(HDC hdc)
 		client_state == CONNECTED,
 		enable_voice
 	);
-	TextOut(hdc, 50, 500, state, strlen(state));
+//	TextOut(hdc, 50, 500, state, strlen(state));
 
 	sprintf(state, "ip %s local %s client %s",
 		connect_ip,
 		listen_ip,
 		client_ip
 	);
-	TextOut(hdc, 50, 550, state, strlen(state));
+//	TextOut(hdc, 50, 550, state, strlen(state));
 }
 
 void Zoomy::draw_pixels(HDC hdc, int xoff, int yoff, int width, int height, int scalew, int scaleh, unsigned char *data)
@@ -358,8 +384,13 @@ LRESULT Zoomy::frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr)
 	if (connect_sframe_sock != SOCKET_ERROR && enable_video)
 	{
 		// prevent duplicate frames
-		if (memcmp(cap_image, cap_image_last, FRAME_SIZE) != 0)
+		if (memcmp(cap_image, cap_image_last, FRAME_SIZE / 2) != 0)
 		{
+			header_t header;
+
+			header.magic = 0xDEAFB4B3;
+			header.size = lpVHdr->dwBytesUsed;
+			enqueue(&squeue, (unsigned char *)&header, sizeof(header_t));
 			enqueue(&squeue, lpVHdr->lpData, lpVHdr->dwBytesUsed);
 			memcpy(cap_image_last, lpVHdr->lpData, lpVHdr->dwBytesUsed);
 		}
@@ -634,12 +665,12 @@ void Zoomy::read_socket(int &csock, char *buffer, int &size)
 	while (1)
 	{
 		int ret = 0;
-		ret = recv(csock, &buffer[size], FRAME_SIZE / 2, 0);
+		ret = recv(csock, &buffer[size], FRAME_PACKET_SIZE, 0);
 		if (ret > 0)
 		{
 //			printf("Read %d bytes from socket\r\n", ret);
 			size += ret;
-			if (size >= FRAME_SIZE / 2)
+			if (size >= FRAME_PACKET_SIZE)
 			{
 //				printf("Read at least one frame\r\n");
 				break;
@@ -675,10 +706,6 @@ void Zoomy::read_socket(int &csock, char *buffer, int &size)
 		}
 	}
 }
-
-
-
-
 
 void Zoomy::yuy2_to_rgb(unsigned char *yuvData, COLORREF *data)
 {

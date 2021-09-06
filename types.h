@@ -43,4 +43,12 @@ typedef struct
 	dib_t		dib;
 } bitmap_t;
 #pragma pack(pop)
+
+typedef struct
+{
+	unsigned int magic;
+	unsigned int size;
+} header_t;
 #endif
+
+

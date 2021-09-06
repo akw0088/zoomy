@@ -45,7 +45,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	wc.hInstance = hInstance;
 	wc.hIcon = LoadIcon(GetModuleHandle(NULL), IDI_APPLICATION);
 	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	wc.lpszMenuName = NULL;
 	wc.lpszClassName = szAppName;
 
@@ -54,7 +54,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// Create the window
 	hwnd = CreateWindow(szAppName, szAppName,
 		WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-		CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, hInstance, 0);
+		CW_USEDEFAULT, CW_USEDEFAULT, 1280, 480, 0, 0, hInstance, 0);
 
 	ShowWindow(hwnd, SW_SHOW);
 	UpdateWindow(hwnd);
@@ -97,12 +97,17 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		SetTimer(hwnd, 0, 500, NULL);
 
 		WSAStartup(MAKEWORD(2, 0), &WSAData);
-		RedirectIOToConsole(true);
 		zoomy.init(hwnd, NULL);
 		hThread = CreateThread(NULL, 0, Zoomy::VoiceThread, &voice_data, 0, NULL);
 		break;
 	}
 	case WM_KEYDOWN:
+		switch (wParam)
+		{
+		case VK_CONTROL:
+			RedirectIOToConsole(true);
+			break;
+		}
 		zoomy.keydown(wParam);
 		break;
 	case WMU_CAPTURE:
