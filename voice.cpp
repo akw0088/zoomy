@@ -7,8 +7,8 @@
 queue_t snd_squeue;
 queue_t snd_rqueue;
 
-unsigned char snd_rbuffer[SEGMENT_SIZE * 5];
-unsigned char snd_sbuffer[SEGMENT_SIZE * 5];
+unsigned char snd_rbuffer[MIC_BUFFER_SIZE * 5];
+unsigned char snd_sbuffer[MIC_BUFFER_SIZE * 5];
 
 
 Voice::Voice()
@@ -75,27 +75,8 @@ int Voice::init(Audio &audio)
 
 int Voice::encode(unsigned short *pcm, unsigned int size, unsigned char *data, int &num_bytes)
 {
-	static short extend_buffer[SEGMENT_SIZE];
-	if (size > SEGMENT_SIZE)
-	{
-		printf("warning dropping samples\n");
-		size = SEGMENT_SIZE;
-	}
-
-	// opus only works with 16 bit samples, and I get garbled audio without using 8bit for some reason
-	unsigned char *pdata = (unsigned char *)pcm;
-	for (unsigned int i = 0; i < SEGMENT_SIZE; i++)
-	{
-		extend_buffer[i] = 0;
-		if (i < size)
-		{
-			extend_buffer[i] = (unsigned short)(pdata[i] - 0x80) << 8;;
-		}
-	}
-
 	// Encode the frame.
-	num_bytes = opus_encode(encoder, (opus_int16 *)extend_buffer, SEGMENT_SIZE, data, MAX_PACKET_SIZE);
-//	num_bytes = opus_encode(encoder, (opus_int16 *)extend_buffer, size, data, SEGMENT_SIZE);
+	num_bytes = opus_encode(encoder, (opus_int16 *)pcm, (MIC_BUFFER_SIZE >> 1), data, MAX_PACKET_SIZE);
 	if (num_bytes < 0)
 	{
 		printf("encode failed: %s\n", opus_strerror(num_bytes));
@@ -110,7 +91,7 @@ int Voice::decode(unsigned char *data, int compressed_size, unsigned short *pcm,
 {
 	int frame_size;
 
-	frame_size = opus_decode(decoder, data, compressed_size, (opus_int16 *)pcm, max_size, 0);
+	frame_size = opus_decode(decoder, data, compressed_size, (opus_int16 *)pcm, (max_size >> 1), 0);
 	if (frame_size < 0)
 	{
 		printf("decoder failed: %s\n", opus_strerror(frame_size));
@@ -162,18 +143,18 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 			}
 		}
 
-		pcm_size = SEGMENT_SIZE;
+		pcm_size = MIC_BUFFER_SIZE;
 		audio.capture_sample(mic_pcm[pong], pcm_size);
 		if (local_echo)
 		{
-			alBufferData(uiBuffer, VOICE_FORMAT, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
+			alBufferData(uiBuffer, AL_FORMAT_MONO16, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
 			alSourceQueueBuffers(mic_source, 1, &uiBuffer);
 		}
 
 	}
 	else
 	{
-		pcm_size = SEGMENT_SIZE;
+		pcm_size = MIC_BUFFER_SIZE;
 		int ret = audio.capture_sample(mic_pcm[pong], pcm_size);
 		if (ret == 0)
 		{
@@ -183,7 +164,7 @@ int Voice::voice_send(Audio &audio, int sock, const char *ip, int port)
 
 		if (local_echo)
 		{
-			alBufferData(mic_buffer[pong], VOICE_FORMAT, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
+			alBufferData(mic_buffer[pong], AL_FORMAT_MONO16, mic_pcm[pong], pcm_size, VOICE_SAMPLE_RATE);
 			int al_err = alGetError();
 			if (al_err != AL_NO_ERROR)
 			{
@@ -290,7 +271,7 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 		char client[MAX_PATH];
 
 		strncpy(client, ip, MAX_PATH - 1);
-		ret = socket_recvfrom(sock, (char *)&snd_rbuffer[0], SEGMENT_SIZE, client, port, MAX_PATH);
+		ret = socket_recvfrom(sock, (char *)&snd_rbuffer[0], MIC_BUFFER_SIZE, client, port, MAX_PATH);
 		if (ret > 0)
 		{
 			enqueue(&snd_rqueue, (unsigned char *)&snd_rbuffer[0], ret);
@@ -316,14 +297,14 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 	{
 		dequeue_peek(&snd_rqueue, (unsigned char *)&msg, VOICE_HEADER);
 
-		if (snd_rqueue.size > msg.size && msg.magic == 1337)
+		if (snd_rqueue.size >= msg.size && msg.magic == 1337)
 		{
 			dequeue(&snd_rqueue, (unsigned char *)&msg, msg.size);
 			if (remote_echo)
 			{
 				// decode opus data
 
-				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], SEGMENT_SIZE);
+				pcm_size = decode(msg.data, msg.size - VOICE_HEADER, decode_pcm[pong], MIC_BUFFER_SIZE);
 
 				if (msg.sequence < 100)
 				{
@@ -365,7 +346,17 @@ int Voice::voice_recv(Audio &audio, int sock, const char *ip, int port)
 					{
 						// now that we have some sound queued up we can start playing
 						buffers_full = true;
-						audio.play(decode_source);
+
+						ALenum state;
+
+						alGetSourcei(decode_source, AL_SOURCE_STATE, &state);
+
+						if (state == AL_STOPPED || AL_INITIAL)
+						{
+							// if we stopped due to a data hiccup, start playing again
+							if (remote_echo)
+								audio.play(decode_source);
+						}
 					}
 				}
 			}

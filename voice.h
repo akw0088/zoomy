@@ -16,7 +16,7 @@ typedef struct
 	unsigned int magic;
 	unsigned int size;
 	unsigned int sequence;
-	unsigned char data[2048];
+	unsigned char data[MAX_PACKET_SIZE];
 } voicemsg_t;
 
 typedef struct
@@ -61,10 +61,10 @@ private:
 #define NUM_PONG 2
 	unsigned int mic_buffer[NUM_PONG];
 	unsigned int mic_source;
-	unsigned short mic_pcm[NUM_PONG][SEGMENT_SIZE];
+	unsigned short mic_pcm[NUM_PONG][MIC_BUFFER_SIZE];
 
 	unsigned int decode_buffer[NUM_PONG];
-	unsigned short decode_pcm[NUM_PONG][SEGMENT_SIZE];
+	unsigned short decode_pcm[NUM_PONG][MIC_BUFFER_SIZE];
 	unsigned int decode_source;
 
 };
