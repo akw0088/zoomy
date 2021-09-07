@@ -576,11 +576,12 @@ int Zoomy::connect_socket(char *ip_addr, unsigned short port, int &sock)
 		else if (ret == 0)
 		{
 			static int count = 0;
-			printf("select() timed out\r\n");
+			printf("select() timed out %d of 10\r\n", count);
 			count++;
 
-			if (count >= 60)
+			if (count >= 10)
 			{
+				count = 0;
 				printf("Resetting socket\r\n");
 				closesocket(sock);
 				sock = -1;
