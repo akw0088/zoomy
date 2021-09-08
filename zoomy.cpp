@@ -4,6 +4,7 @@
 int Zoomy::connect_sframe_sock = -1;
 int Zoomy::enable_video = 1;
 bool Zoomy::enable_voice = false;
+bool Zoomy::mute_microphone = false;
 
 // globals (Large buffers cant be on stack)
 queue_t squeue;
@@ -227,7 +228,7 @@ void Zoomy::capture()
 		}
 	}
 
-
+	Sleep(0);
 }
 
 void Zoomy::step()
@@ -373,7 +374,7 @@ void Zoomy::keydown(int key)
 	switch (key)
 	{
 	case VK_SPACE:
-		enable_voice = !enable_voice;
+		mute_microphone = !mute_microphone;
 		break;
 	}
 }
@@ -403,7 +404,7 @@ LRESULT Zoomy::frameCallback(HWND hWnd, LPVIDEOHDR lpVHdr)
 	return 0;
 }
 
-
+// Could probably throw this into WMU_CAPTURE and it would be fine without an extra thread, but I like how compartmentalized it is
 DWORD WINAPI Zoomy::VoiceThread(LPVOID lpParam)
 {
 	static Audio audio;
@@ -434,12 +435,22 @@ DWORD WINAPI Zoomy::VoiceThread(LPVOID lpParam)
 	voice.init(audio);
 	audio.capture_start();
 
+
 	while (1)
 	{
 		if (enable_voice)
 		{
 			voice.voice_recv(audio, udp_listen, connect_ip, udp_port_listen);
-			voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
+
+			if (mute_microphone == false)
+			{
+				voice.voice_send(audio, udp_connect, connect_ip, udp_port_connect);
+			}
+			Sleep(0);
+		}
+		else
+		{
+			Sleep(1000);
 		}
 	}
 

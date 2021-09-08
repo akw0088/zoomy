@@ -54,6 +54,7 @@ public:
 	static int connect_sframe_sock;
 	static int enable_video;
 	static bool enable_voice;
+	static bool mute_microphone;
 
 
 private:
